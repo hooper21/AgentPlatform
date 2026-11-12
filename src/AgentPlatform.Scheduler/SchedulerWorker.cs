@@ -1,29 +1,66 @@
+using AgentPlatform.Scheduler.Scheduling;
+
 namespace AgentPlatform.Scheduler;
 
 /// <summary>
 /// Планировщик запусков агентов без входящего сообщения (например, агент качества).
-/// В v1 — заглушка: читает интервал опроса и пишет в лог; cron-исполнение
-/// и работа с scheduled_runs появятся в задаче 2.4.
+/// Раз в <c>Scheduler:PollIntervalSeconds</c> секунд делает тик: выбирает созревшие
+/// записи scheduled_runs и запускает сессии агентов через <see cref="ScheduledRunRunner"/>.
 /// </summary>
-public sealed class SchedulerWorker(ILogger<SchedulerWorker> logger, IConfiguration configuration) : BackgroundService
+public sealed class SchedulerWorker(
+    ScheduledRunRunner runner,
+    IConfiguration configuration,
+    TimeProvider timeProvider,
+    ILogger<SchedulerWorker> logger) : BackgroundService
 {
+    private readonly ScheduledRunRunner _runner =
+        runner ?? throw new ArgumentNullException(nameof(runner));
+
+    private readonly IConfiguration _configuration =
+        configuration ?? throw new ArgumentNullException(nameof(configuration));
+
+    private readonly TimeProvider _timeProvider =
+        timeProvider ?? throw new ArgumentNullException(nameof(timeProvider));
+
+    private readonly ILogger<SchedulerWorker> _logger =
+        logger ?? throw new ArgumentNullException(nameof(logger));
+
     protected override async Task ExecuteAsync(CancellationToken stoppingToken)
     {
-        var rawInterval = configuration["Scheduler:PollIntervalSeconds"];
-        var intervalSeconds = int.TryParse(rawInterval, out var parsed) ? Math.Clamp(parsed, 5, 3600) : 60;
+        var intervalSeconds = ReadPollInterval();
         var interval = TimeSpan.FromSeconds(intervalSeconds);
 
-        logger.LogInformation("Scheduler stub started, poll interval {IntervalSeconds}s", intervalSeconds);
+        _logger.LogInformation(
+            "Scheduler started: poll interval {IntervalSeconds}s, cron time zone UTC",
+            intervalSeconds);
 
         while (!stoppingToken.IsCancellationRequested)
         {
-            // TODO(2.4): выбрать scheduled_runs (enabled = true), проверить cron,
-            // запустить сессию через IOrchestrationRuntime и записать last_run_at/status.
-            logger.LogInformation("Scheduler stub tick at {Utc}: no scheduled runs executed yet", DateTimeOffset.UtcNow);
+            try
+            {
+                var launched = await _runner.RunOnceAsync(stoppingToken).ConfigureAwait(false);
+
+                if (launched > 0)
+                {
+                    _logger.LogInformation(
+                        "Scheduler tick at {Utc}: {Launched} scheduled runs launched",
+                        _timeProvider.GetUtcNow(),
+                        launched);
+                }
+            }
+            catch (OperationCanceledException) when (stoppingToken.IsCancellationRequested)
+            {
+                break;
+            }
+            catch (Exception exception)
+            {
+                // Ошибка одного тика не должна останавливать процесс.
+                _logger.LogError(exception, "Scheduler tick failed");
+            }
 
             try
             {
-                await Task.Delay(interval, stoppingToken).ConfigureAwait(false);
+                await Task.Delay(interval, _timeProvider, stoppingToken).ConfigureAwait(false);
             }
             catch (OperationCanceledException)
             {
@@ -31,6 +68,12 @@ public sealed class SchedulerWorker(ILogger<SchedulerWorker> logger, IConfigurat
             }
         }
 
-        logger.LogInformation("Scheduler stub stopped");
+        _logger.LogInformation("Scheduler stopped");
+    }
+
+    private int ReadPollInterval()
+    {
+        var rawInterval = _configuration["Scheduler:PollIntervalSeconds"];
+        return int.TryParse(rawInterval, out var parsed) ? Math.Clamp(parsed, 5, 3600) : 30;
     }
 }

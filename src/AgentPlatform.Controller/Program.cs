@@ -29,7 +29,9 @@ app.MapGet("/", () => Results.Ok(new
         "/health",
         "/api/v1/internal/tenants",
         "/api/v1/internal/tenants/{tenantId}/users",
-        "/api/v1/internal/tool-settings/validate"
+        "/api/v1/internal/tool-settings/validate",
+        "GET/POST /api/v1/internal/tenants/{tenantId}/scheduled-runs",
+        "GET/PUT/DELETE /api/v1/internal/tenants/{tenantId}/scheduled-runs/{id}"
     }
 }));
 
@@ -69,6 +71,9 @@ app.MapGet("/api/v1/internal/tenants/{tenantId:guid}/users", async (
 // Policy Engine (Core + Runtime): проверка понижения политики и gate_settings
 // перед сохранением tool_settings. Runtime повторяет проверку при вызове тула.
 app.MapToolSettingEndpoints();
+
+// Scheduler: управление расписаниями cron-запусков (scheduled_runs) без UI.
+app.MapScheduledRunEndpoints();
 
 // TODO(3.x): панель оператора платформы — каталог коннекторов, шаблоны решений, аудит платформы.
 app.Run();

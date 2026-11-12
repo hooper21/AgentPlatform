@@ -56,6 +56,7 @@ public static class InfrastructureServiceCollectionExtensions
 
         services.AddScoped(typeof(ITenantScopedRepository<>), typeof(TenantScopedRepository<>));
         services.AddScoped(typeof(IGlobalRepository<>), typeof(GlobalRepository<>));
+        services.AddScoped<IScheduledRunStore, EfScheduledRunStore>();
 
         services.AddScoped<DatabaseSeeder>();
 

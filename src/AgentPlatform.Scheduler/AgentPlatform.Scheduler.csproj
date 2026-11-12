@@ -12,7 +12,9 @@
   </ItemGroup>
 
   <ItemGroup>
-    <ProjectReference Include="..\AgentPlatform.Infrastructure\AgentPlatform.Infrastructure.csproj" />
     <ProjectReference Include="..\AgentPlatform.Core\AgentPlatform.Core.csproj" />
+    <ProjectReference Include="..\AgentPlatform.Infrastructure\AgentPlatform.Infrastructure.csproj" />
+    <ProjectReference Include="..\AgentPlatform.LlmGateway\AgentPlatform.LlmGateway.csproj" />
+    <ProjectReference Include="..\AgentPlatform.Runtime\AgentPlatform.Runtime.csproj" />
   </ItemGroup>
 </Project>

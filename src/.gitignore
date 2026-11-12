@@ -1,0 +1,20 @@
+# Build output
+bin/
+obj/
+artifacts/
+
+# Local configuration: секреты только в переменных окружения / .env (не коммитим)
+.env
+.env.*
+!.env.example
+appsettings.Local.json
+
+# IDE
+.vs/
+.idea/
+*.user
+*.suo
+
+# Logs
+logs/
+*.log

@@ -1,0 +1,158 @@
+﻿name: agentplatform
+
+# ---------------------------------------------------------------------------
+# Общие фрагменты окружения.
+# Строки подключения и секреты приходят ТОЛЬКО из переменных окружения
+# (см. .env.example); в appsettings.json их нет.
+# ---------------------------------------------------------------------------
+
+x-app-environment: &app-environment
+  ASPNETCORE_ENVIRONMENT: ${ASPNETCORE_ENVIRONMENT:-Development}
+
+x-service-environment: &service-environment
+  ASPNETCORE_ENVIRONMENT: ${ASPNETCORE_ENVIRONMENT:-Development}
+  ConnectionStrings__Postgres: "Host=postgres;Port=5432;Database=${POSTGRES_DB:-agentplatform};Username=${POSTGRES_USER:-agentplatform};Password=${POSTGRES_PASSWORD:-agentplatform};Include Error Detail=true"
+
+x-healthcheck: &app-healthcheck
+  test: ["CMD-SHELL", "curl -fsS http://localhost:8080/health || exit 1"]
+  interval: 10s
+  timeout: 3s
+  retries: 12
+  start_period: 15s
+
+services:
+  postgres:
+    image: pgvector/pgvector:pg17
+    environment:
+      POSTGRES_DB: ${POSTGRES_DB:-agentplatform}
+      POSTGRES_USER: ${POSTGRES_USER:-agentplatform}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-agentplatform}
+    ports:
+      - "5432:5432"
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-agentplatform} -d ${POSTGRES_DB:-agentplatform}"]
+      interval: 5s
+      timeout: 5s
+      retries: 20
+
+  redis:
+    image: redis:7-alpine
+    command: ["redis-server", "--appendonly", "yes"]
+    ports:
+      - "6379:6379"
+    volumes:
+      - redisdata:/data
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 3s
+      retries: 20
+
+  # Одноразовая задача: накатывает миграции и проверочный seed (tenant + admin).
+  migrate:
+    build:
+      context: .
+      args:
+        PROJECT: AgentPlatform.TenantApp
+    image: agentplatform/tenant-app:${AGENTPLATFORM_IMAGE_TAG:-dev}
+    command: ["--migrate", "--seed"]
+    environment:
+      <<: *service-environment
+      AGENTPLATFORM_SEED_ADMIN_PASSWORD: ${AGENTPLATFORM_SEED_ADMIN_PASSWORD:?задайте AGENTPLATFORM_SEED_ADMIN_PASSWORD в .env}
+      AGENTPLATFORM_SEED_ADMIN_EMAIL: ${AGENTPLATFORM_SEED_ADMIN_EMAIL:-admin@demo.local}
+      AGENTPLATFORM_SEED_TENANT_NAME: ${AGENTPLATFORM_SEED_TENANT_NAME:-Demo Tenant}
+    depends_on:
+      postgres:
+        condition: service_healthy
+    restart: "no"
+
+  gateway:
+    build:
+      context: .
+      args:
+        PROJECT: AgentPlatform.Gateway
+    image: agentplatform/gateway:${AGENTPLATFORM_IMAGE_TAG:-dev}
+    environment:
+      <<: *app-environment
+      Redis__ConnectionString: redis:6379
+    ports:
+      - "8080:8080"
+    depends_on:
+      redis:
+        condition: service_healthy
+    healthcheck: *app-healthcheck
+
+  controller:
+    build:
+      context: .
+      args:
+        PROJECT: AgentPlatform.Controller
+    image: agentplatform/controller:${AGENTPLATFORM_IMAGE_TAG:-dev}
+    environment:
+      <<: *service-environment
+    ports:
+      - "8081:8080"
+    depends_on:
+      postgres:
+        condition: service_healthy
+    healthcheck: *app-healthcheck
+
+  tenant-app:
+    build:
+      context: .
+      args:
+        PROJECT: AgentPlatform.TenantApp
+    image: agentplatform/tenant-app:${AGENTPLATFORM_IMAGE_TAG:-dev}
+    environment:
+      <<: *service-environment
+    ports:
+      - "8082:8080"
+    depends_on:
+      postgres:
+        condition: service_healthy
+      migrate:
+        condition: service_completed_successfully
+    healthcheck: *app-healthcheck
+
+  connector-host:
+    build:
+      context: .
+      args:
+        PROJECT: AgentPlatform.ConnectorHost
+    image: agentplatform/connector-host:${AGENTPLATFORM_IMAGE_TAG:-dev}
+    environment:
+      <<: *app-environment
+    ports:
+      - "8083:8080"
+    healthcheck: *app-healthcheck
+
+  knowledge:
+    build:
+      context: .
+      args:
+        PROJECT: AgentPlatform.Knowledge
+    image: agentplatform/knowledge:${AGENTPLATFORM_IMAGE_TAG:-dev}
+    environment:
+      <<: *app-environment
+    ports:
+      - "8084:8080"
+    healthcheck: *app-healthcheck
+
+  scheduler:
+    build:
+      context: .
+      args:
+        PROJECT: AgentPlatform.Scheduler
+    image: agentplatform/scheduler:${AGENTPLATFORM_IMAGE_TAG:-dev}
+    environment:
+      <<: *service-environment
+    depends_on:
+      postgres:
+        condition: service_healthy
+    restart: unless-stopped
+
+volumes:
+  pgdata:
+  redisdata:

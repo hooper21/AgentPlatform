@@ -6,4 +6,9 @@
     <Nullable>enable</Nullable>
   </PropertyGroup>
 
+  <ItemGroup>
+    <!-- JSON Schema манифеста коннектора — артефакт платформы (см. ConnectorManifestSchema). -->
+    <EmbeddedResource Include="Contracts\connector-manifest.schema.json" />
+  </ItemGroup>
+
 </Project>

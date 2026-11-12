@@ -4,16 +4,24 @@ using AgentPlatform.Core.Enums;
 namespace AgentPlatform.Core.Dto;
 
 /// <summary>
-/// Идентификация сессии для оркестратора: версия агента зафиксирована
-/// (version pinning) на момент старта сессии.
+/// Контекст сессии для оркестратора и Policy Engine: версия агента зафиксирована
+/// (version pinning) на момент старта сессии и не меняется при resume.
 /// </summary>
-public sealed record SessionRef(
+/// <param name="SessionId">Идентификатор сессии (sessions.id / thread_id).</param>
+/// <param name="TenantId">Тенант сессии.</param>
+/// <param name="AgentId">Агент сессии.</param>
+/// <param name="AgentVersion">Версия агента, с которой начата сессия.</param>
+/// <param name="ChannelId">Канал, через который идёт диалог.</param>
+/// <param name="UserRef">Идентификатор визитера в терминах канала.</param>
+/// <param name="Status">Текущий статус сессии.</param>
+public sealed record SessionContext(
     Guid SessionId,
     Guid TenantId,
     Guid AgentId,
     int AgentVersion,
     Guid ChannelId,
-    string UserRef);
+    string UserRef,
+    SessionStatus Status = SessionStatus.Active);
 
 /// <summary>Результат шага оркестратора.</summary>
 /// <param name="Outcome">Итог шага.</param>
@@ -38,8 +46,17 @@ public sealed record ConversationMessage(
     string Content,
     DateTimeOffset Timestamp);
 
-/// <summary>Нормализованное входящее сообщение визитера.</summary>
-public sealed record InboundMessage(
+/// <summary>
+/// Нормализованное входящее сообщение визитера — результат
+/// <see cref="Abstractions.IChannelAdapter.OnMessage"/>.
+/// </summary>
+/// <param name="TenantId">Тенант, определённый Gateway по ключу канала.</param>
+/// <param name="ChannelId">Канал, из которого пришло сообщение.</param>
+/// <param name="UserRef">Идентификатор визитера в терминах канала.</param>
+/// <param name="Text">Текст сообщения (ПДн маскируются до записи в чекпоинт).</param>
+/// <param name="Metadata">Дополнительные атрибуты канала (не влияют на политики).</param>
+/// <param name="ReceivedAt">Момент получения (UTC).</param>
+public sealed record IncomingMessage(
     Guid TenantId,
     Guid ChannelId,
     string UserRef,

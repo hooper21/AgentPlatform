@@ -6,48 +6,37 @@ using AgentPlatform.Core.Validation;
 
 namespace AgentPlatform.Tests.Core;
 
-/// <summary>Контракты Core: сериализация состояния, валидаторы jsonb и токены БД.</summary>
+/// <summary>
+/// Контракты Core: требование гейта, валидаторы jsonb и токены БД.
+/// Round-trip состояния сессии — <see cref="StateContractTests"/>,
+/// манифест коннектора — <see cref="ConnectorManifestTests"/>.
+/// </summary>
 public sealed class CoreContractTests
 {
     [Fact]
-    public void Session_state_contract_round_trips_as_neutral_json()
+    public void Gate_requirement_factories_match_contract()
     {
-        var state = new SessionStateContract
-        {
-            Messages =
-            [
-                new StateMessage(
-                    MessageRole.User.ToDbValue(),
-                    "Нужна консультация",
-                    DateTimeOffset.Parse("2026-01-01T10:00:00Z", System.Globalization.CultureInfo.InvariantCulture))
-            ],
-            PendingGate = new PendingGateState(
-                Guid.NewGuid(),
-                new GatePayload("echo_write", new JsonObject { ["message"] = "***" }, "Отправить сообщение", "Отменить нельзя")),
-            Counters = new SessionCounters(Turns: 3, ToolCalls: 1)
-        };
+        Assert.Equal(GateRequirementKind.None, GateRequirement.None.Kind);
+        Assert.False(GateRequirement.None.RequiresConfirmation);
 
-        var json = state.ToJson();
-        state.Validate();
+        Assert.Equal(GateRequirementKind.UserConfirmation, GateRequirement.UserConfirmation.Kind);
+        Assert.True(GateRequirement.UserConfirmation.RequiresConfirmation);
 
-        Assert.Contains("\"pending_gate\"", json, StringComparison.Ordinal);
-        Assert.Contains("\"human_description\"", json, StringComparison.Ordinal);
+        Assert.Equal(GateRequirementKind.OperatorConfirmation, GateRequirement.OperatorConfirmation.Kind);
+        Assert.True(GateRequirement.OperatorConfirmation.RequiresConfirmation);
 
-        var restored = SessionStateContract.FromJson(json);
+        var predicate = new GatePredicate("amount", "gt", 50_000);
+        var conditional = GateRequirement.Conditional(predicate);
 
-        Assert.NotNull(restored);
-        Assert.Equal(SessionStateContract.CurrentVersion, restored.Version);
-        Assert.Single(restored.Messages);
-        Assert.Equal("echo_write", restored.PendingGate?.Payload.Tool);
-        Assert.Equal(3, restored.Counters.Turns);
+        Assert.Equal(GateRequirementKind.Conditional, conditional.Kind);
+        Assert.Same(predicate, conditional.Predicate);
+        Assert.True(conditional.RequiresConfirmation);
     }
 
     [Fact]
-    public void Session_state_with_unsupported_version_is_rejected()
+    public void Conditional_gate_requirement_requires_predicate()
     {
-        var state = new SessionStateContract { Version = 99 };
-
-        Assert.Throws<JsonValidationException>(state.Validate);
+        Assert.Throws<ArgumentNullException>(() => GateRequirement.Conditional(null!));
     }
 
     [Fact]

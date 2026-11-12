@@ -27,13 +27,16 @@ public sealed record GatePayload(
         => string.IsNullOrWhiteSpace(json) ? null : PlatformJson.DeserializeDb<GatePayload>(json);
 }
 
-/// <summary>Решение по HITL-гейту.</summary>
+/// <summary>
+/// Решение по HITL-гейту (approvals.decision). Передаётся в
+/// <see cref="Abstractions.IOrchestrationRuntime.ResumeAsync"/>.
+/// </summary>
 /// <param name="Status">pending | approved | rejected | expired | superseded.</param>
 /// <param name="DecidedByKind">operator | user | system.</param>
 /// <param name="DecidedBy">Пользователь кабинета, принявший решение (null для визитера канала).</param>
 /// <param name="Comment">Комментарий к решению.</param>
 /// <param name="DecidedAt">Момент решения (UTC).</param>
-public sealed record GateDecision(
+public sealed record Decision(
     Enums.ApprovalStatus Status,
     Enums.ApprovalDecisionKind DecidedByKind,
     Guid? DecidedBy = null,

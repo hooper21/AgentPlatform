@@ -18,7 +18,7 @@ app.MapGet("/", () => Results.Ok(new
 app.MapGet("/health", () => Results.Ok(new ServiceHealth("ok", "gateway", DateTimeOffset.UtcNow)));
 
 // TODO(2.x): приём сообщения из канала, проверка подписи/JWT, запуск IOrchestrationRuntime.
-app.MapPost("/api/v1/sessions/{sessionId:guid}/messages", (Guid sessionId, InboundMessage message) =>
+app.MapPost("/api/v1/sessions/{sessionId:guid}/messages", (Guid sessionId, IncomingMessage message) =>
     Results.Problem(
         title: "Gateway is a stub in v1",
         detail: $"Session {sessionId} received a message; orchestration runtime is wired in task 2.x.",

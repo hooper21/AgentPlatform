@@ -3,33 +3,53 @@ using AgentPlatform.Core.Dto;
 namespace AgentPlatform.Core.Abstractions;
 
 /// <summary>
-/// Контракт канала (widget, telegram, плагины). Канал принимает входящее
-/// сообщение от визитера и доставляет ответ агента.
+/// Контракт канала (плагин: widget, telegram, …). Последовательность по документу §6.4:
+/// приём сообщения с идентификацией пользователя (<see cref="OnMessage"/>) → привязка
+/// к сессии в Gateway → стриминг ответа (<see cref="StreamReply"/>) → карточки
+/// подтверждения и эскалации (<see cref="ShowConfirmationCard"/>, <see cref="ShowEscalation"/>).
+/// Канал не содержит бизнес-логики: только транспорт и рендеринг платформенных событий.
 /// </summary>
 public interface IChannelAdapter
 {
-    /// <summary>Тип канала в терминах платформы (widget | telegram | ...).</summary>
+    /// <summary>
+    /// Тип канала в терминах платформы (значение channels.type): widget | telegram | …
+    /// Строка, а не enum: новый канал — плагин, а не правка Core.
+    /// </summary>
     string ChannelType { get; }
 
-    /// <summary>Нормализует входящий payload канала в сообщение платформы.</summary>
-    Task<InboundMessage> ParseAsync(ChannelEnvelope envelope, CancellationToken cancellationToken = default);
+    /// <summary>
+    /// Принимает сырой payload канала, проверяет подпись/JWT и идентифицирует визитера,
+    /// возвращая нормализованное сообщение платформы. Привязку к сессии (открытие или
+    /// возобновление по thread_id) выполняет Gateway — канал о сессиях не знает.
+    /// </summary>
+    Task<IncomingMessage> OnMessage(ChannelEnvelope envelope, CancellationToken ct = default);
 
-    /// <summary>Доставляет ответ агента (или оператора) получателю в канале.</summary>
-    Task SendAsync(Guid tenantId, Recipient recipient, OutboundMessage message, CancellationToken cancellationToken = default);
+    /// <summary>
+    /// Доставляет поток ответа агента (или оператора) получателю. Канал сам выбирает
+    /// способ доставки: виджет — SSE-чанки, Telegram — накопление и отправка сообщениями.
+    /// </summary>
+    /// <param name="conversation">Адрес доставки (сессия + визитер).</param>
+    /// <param name="reply">Поток чанков; последний помечен <c>IsFinal</c>.</param>
+    Task StreamReply(
+        ChannelConversation conversation,
+        IAsyncEnumerable<ChannelReplyChunk> reply,
+        CancellationToken ct = default);
+
+    /// <summary>
+    /// Показывает карточку подтверждения write/destructive-действия (HITL-гейт).
+    /// Решение пользователя возвращается в Gateway и передаётся в
+    /// <see cref="IOrchestrationRuntime.ResumeAsync"/>.
+    /// </summary>
+    Task ShowConfirmationCard(
+        ChannelConversation conversation,
+        ConfirmationCard card,
+        CancellationToken ct = default);
+
+    /// <summary>
+    /// Показывает уведомление об эскалации: диалог передан оператору (takeover).
+    /// </summary>
+    Task ShowEscalation(
+        ChannelConversation conversation,
+        EscalationNotice notice,
+        CancellationToken ct = default);
 }
-
-/// <summary>Сырой payload, пришедший от канала.</summary>
-/// <param name="TenantId">Тенант, которому принадлежит канал.</param>
-/// <param name="ChannelId">Идентификатор канала.</param>
-/// <param name="UserRef">Идентификатор визитера в терминах канала.</param>
-/// <param name="Body">Тело сообщения.</param>
-/// <param name="Headers">Заголовки/подпись запроса (например, JWT виджета).</param>
-public sealed record ChannelEnvelope(
-    Guid TenantId,
-    Guid ChannelId,
-    string UserRef,
-    string Body,
-    IReadOnlyDictionary<string, string>? Headers = null);
-
-/// <summary>Адресат доставки в канале.</summary>
-public sealed record Recipient(Guid ChannelId, string UserRef);

@@ -22,17 +22,16 @@ public sealed class MafOrchestrationRuntime : IOrchestrationRuntime
     public const string GraphSignatureHash = "agentplatform.maf.graph.v1";
 
     /// <inheritdoc />
-    public Task<RunResult> RunAsync(
-        SessionRef session,
-        string message,
-        CancellationToken cancellationToken = default)
+    public Task<RunResult> RunAsync(SessionContext session, IncomingMessage msg, CancellationToken ct)
     {
         ArgumentNullException.ThrowIfNull(session);
+        ArgumentNullException.ThrowIfNull(msg);
+        ct.ThrowIfCancellationRequested();
 
         // TODO(2.x): собрать Workflow (WorkflowBuilder), выполнить шаг и вернуть чекпоинт.
         var result = new RunResult(
             RunOutcome.Completed,
-            Message: $"[runtime stub] получено сообщение: {message}",
+            Message: $"[runtime stub] получено сообщение: {msg.Text}",
             GraphSignatureHash: GraphSignatureHash,
             Superstep: 1);
 
@@ -40,41 +39,29 @@ public sealed class MafOrchestrationRuntime : IOrchestrationRuntime
     }
 
     /// <inheritdoc />
-    public Task<RunResult> PauseAsync(
-        SessionRef session,
-        GatePayload gatePayload,
-        CancellationToken cancellationToken = default)
+    public Task PauseAsync(SessionContext session, GatePayload payload)
     {
         ArgumentNullException.ThrowIfNull(session);
-        ArgumentNullException.ThrowIfNull(gatePayload);
+        ArgumentNullException.ThrowIfNull(payload);
 
-        // TODO(2.x): остановить граф на gate-узле, сохранить чекпоинт и вернуть approval id.
-        var result = new RunResult(
-            RunOutcome.PausedForGate,
-            Message: null,
-            PendingGate: gatePayload,
-            GraphSignatureHash: GraphSignatureHash,
-            Superstep: 1);
-
-        return Task.FromResult(result);
+        // TODO(2.x): остановить граф на gate-узле и сохранить чекпоинт через StateContract.
+        return Task.CompletedTask;
     }
 
     /// <inheritdoc />
-    public Task<RunResult> ResumeAsync(
-        SessionRef session,
-        GateDecision decision,
-        CancellationToken cancellationToken = default)
+    public Task ResumeAsync(SessionContext session, Decision decision)
     {
         ArgumentNullException.ThrowIfNull(session);
         ArgumentNullException.ThrowIfNull(decision);
 
-        // TODO(2.x): проверить graph_signature_hash чекпоинта и продолжить граф с решением оператора.
-        var result = new RunResult(
-            RunOutcome.Completed,
-            Message: $"[runtime stub] решение по гейту: {decision.Status}",
-            GraphSignatureHash: GraphSignatureHash,
-            Superstep: 2);
+        if (decision.Status == ApprovalStatus.Pending)
+        {
+            throw new ArgumentException(
+                "Resume requires a terminal decision (approved | rejected | expired | superseded).",
+                nameof(decision));
+        }
 
-        return Task.FromResult(result);
+        // TODO(2.x): проверить graph_signature_hash чекпоинта и продолжить граф с решением.
+        return Task.CompletedTask;
     }
 }

@@ -1,0 +1,107 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://agentplatform.local/schemas/connector-manifest.schema.json",
+  "title": "AgentPlatform ConnectorManifest",
+  "description": "Манифест коннектора платформы (connector_registry.manifest). JSON-представление — snake_case. Проверяется при установке коннектора: ConnectorManifestValidator в AgentPlatform.Core.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["name", "version", "description", "auth", "tools", "limits"],
+  "properties": {
+    "name": {
+      "type": "string",
+      "minLength": 1,
+      "description": "Имя коннектора (уникально вместе с версией)."
+    },
+    "version": {
+      "type": "string",
+      "pattern": "^\\d+\\.\\d+\\.\\d+$",
+      "description": "Версия коннектора в формате major.minor.patch."
+    },
+    "description": {
+      "type": "string",
+      "minLength": 1,
+      "description": "Назначение коннектора."
+    },
+    "auth": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["type"],
+      "properties": {
+        "type": {
+          "enum": ["apiKey", "longLivedToken", "oauth2", "external_mcp"],
+          "description": "Тип аутентификации коннектора."
+        },
+        "fields": {
+          "type": "array",
+          "minItems": 1,
+          "uniqueItems": true,
+          "items": { "type": "string", "minLength": 1 },
+          "description": "Имена ожидаемых полей секрета (без значений)."
+        }
+      }
+    },
+    "tools": {
+      "type": "array",
+      "minItems": 1,
+      "description": "Тулы коннектора.",
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["name", "description", "input_schema", "policy"],
+        "properties": {
+          "name": {
+            "type": "string",
+            "minLength": 1
+          },
+          "description": {
+            "type": "string",
+            "minLength": 1
+          },
+          "input_schema": {
+            "type": "object",
+            "description": "JSON Schema аргументов тула."
+          },
+          "policy": {
+            "enum": ["read", "write", "destructive"],
+            "description": "Политика тула; проверяется серверно, повышение запрещено."
+          },
+          "cache_class": {
+            "type": "string",
+            "minLength": 1,
+            "description": "Класс кеша read-тула; должен быть объявлен в cacheClasses."
+          },
+          "cost_per_call": {
+            "type": "number",
+            "minimum": 0,
+            "description": "Стоимость вызова у внешнего API."
+          }
+        }
+      }
+    },
+    "limits": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["requests_per_window", "window_seconds"],
+      "properties": {
+        "requests_per_window": {
+          "type": "integer",
+          "minimum": 1
+        },
+        "window_seconds": {
+          "type": "integer",
+          "minimum": 1
+        },
+        "weight_by_endpoint": {
+          "type": "object",
+          "additionalProperties": { "type": "number", "exclusiveMinimum": 0 },
+          "description": "Вес запроса по эндпоинту (взвешенные квоты)."
+        }
+      }
+    },
+    "cache_classes": {
+      "type": "object",
+      "additionalProperties": { "type": "integer", "minimum": 1 },
+      "description": "Классы кеша read-тулов: имя класса → TTL в секундах."
+    }
+  }
+}

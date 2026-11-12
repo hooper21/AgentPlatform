@@ -69,12 +69,17 @@ public sealed record GatePredicate(string Field, string Op, JsonNode? Value = nu
 /// <param name="ManifestPolicy">Политика из манифеста: read | write | destructive.</param>
 /// <param name="TenantPolicy">Политика из tool_settings тенанта (понижение допустимо, повышение — нет).</param>
 /// <param name="ConditionalPredicate">Условие режима conditional из tool_settings (если задано).</param>
+/// <param name="TenantGateMode">
+/// Режим гейта из tool_settings.gate_settings.mode (always | conditional | never).
+/// null — настроек нет, действует <see cref="TenantPolicyContext.DefaultGateMode"/>.
+/// </param>
 public sealed record ToolContext(
     Guid InstallationId,
     string ToolName,
     ToolPolicy ManifestPolicy,
     ToolPolicy? TenantPolicy = null,
-    GatePredicate? ConditionalPredicate = null);
+    GatePredicate? ConditionalPredicate = null,
+    GateMode? TenantGateMode = null);
 
 /// <summary>
 /// Настройки тенанта, влияющие на гейт. Если настроек нет — действует самый

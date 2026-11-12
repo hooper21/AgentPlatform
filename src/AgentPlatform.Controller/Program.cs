@@ -1,3 +1,4 @@
+using AgentPlatform.Controller.Endpoints;
 using AgentPlatform.Core.Abstractions;
 using AgentPlatform.Core.Dto;
 using AgentPlatform.Infrastructure.Configuration;
@@ -23,7 +24,13 @@ app.MapGet("/", () => Results.Ok(new
 {
     service = "controller",
     status = "stub",
-    endpoints = new[] { "/health", "/api/v1/internal/tenants", "/api/v1/internal/tenants/{tenantId}/users" }
+    endpoints = new[]
+    {
+        "/health",
+        "/api/v1/internal/tenants",
+        "/api/v1/internal/tenants/{tenantId}/users",
+        "/api/v1/internal/tool-settings/validate"
+    }
 }));
 
 app.MapGet("/health", () => Results.Ok(new ServiceHealth("ok", "controller", DateTimeOffset.UtcNow)));
@@ -58,6 +65,10 @@ app.MapGet("/api/v1/internal/tenants/{tenantId:guid}/users", async (
 
     return Results.Ok(users);
 });
+
+// Policy Engine (Core + Runtime): проверка понижения политики и gate_settings
+// перед сохранением tool_settings. Runtime повторяет проверку при вызове тула.
+app.MapToolSettingEndpoints();
 
 // TODO(3.x): панель оператора платформы — каталог коннекторов, шаблоны решений, аудит платформы.
 app.Run();

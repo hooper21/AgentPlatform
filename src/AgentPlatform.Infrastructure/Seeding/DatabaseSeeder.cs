@@ -65,7 +65,9 @@ public sealed class DatabaseSeeder(
             userCreated = true;
         }
 
-        if (tenantCreated || userCreated)
+        var roleUsersCreated = await EnsureRoleUsersAsync(tenant.Id, cancellationToken).ConfigureAwait(false);
+
+        if (tenantCreated || userCreated || roleUsersCreated > 0)
         {
             await context.SaveChangesAsync(cancellationToken).ConfigureAwait(false);
             logger.LogInformation(
@@ -81,6 +83,51 @@ public sealed class DatabaseSeeder(
         }
 
         return new SeedResult(tenant.Id, user.Id, tenantCreated, userCreated);
+    }
+
+    /// <summary>Демо-пользователи ролей operator/viewer (только при SeedRoleUsers=true).</summary>
+    private static readonly (string Email, UserRole Role)[] RoleUsers =
+    [
+        ("operator@demo.local", UserRole.Operator),
+        ("viewer@demo.local", UserRole.Viewer)
+    ];
+
+    private async Task<int> EnsureRoleUsersAsync(Guid tenantId, CancellationToken cancellationToken)
+    {
+        if (!options.SeedRoleUsers)
+        {
+            return 0;
+        }
+
+        var created = 0;
+
+        foreach (var (roleEmail, role) in RoleUsers)
+        {
+            var email = roleEmail.ToLowerInvariant();
+            var exists = await context.Users
+                .AnyAsync(
+                    candidate => candidate.TenantId == tenantId && candidate.Email == email,
+                    cancellationToken)
+                .ConfigureAwait(false);
+
+            if (exists)
+            {
+                continue;
+            }
+
+            context.Users.Add(new User
+            {
+                TenantId = tenantId,
+                Email = email,
+                PasswordHash = passwordHasher.Hash(options.AdminPassword!),
+                Role = role.ToDbValue(),
+                AuthMeta = "{}"
+            });
+
+            created++;
+        }
+
+        return created;
     }
 
     private void ValidateOptions()

@@ -1,0 +1,236 @@
+@page "/dialogs/{SessionId:guid}"
+@attribute [Authorize]
+@rendermode InteractiveServer
+@inject ControllerApiClient Api
+@inject AuthenticationStateProvider AuthState
+
+<PageTitle>Диалог</PageTitle>
+
+<div class="row between">
+    <h1>Диалог</h1>
+    <div class="row gap">
+        <a class="button-link" href="/dialogs">← К списку</a>
+        <button class="ghost" @onclick="LoadAsync" disabled="@loading">Обновить</button>
+    </div>
+</div>
+
+@if (!string.IsNullOrWhiteSpace(error))
+{
+    <div class="alert alert-error">@error</div>
+}
+@if (!string.IsNullOrWhiteSpace(notice))
+{
+    <div class="alert alert-ok">@notice</div>
+}
+
+@if (loading)
+{
+    <p class="muted">Загрузка…</p>
+}
+else if (dialog is null)
+{
+    <p class="muted">Диалог не найден.</p>
+}
+else
+{
+    <section class="card">
+        <p class="muted">
+            Агент: <strong>@dialog.AgentName</strong> · визитер: @dialog.UserRef ·
+            статус: <span class="badge">@dialog.Status</span> ·
+            активность: @dialog.LastActivityAt.ToLocalTime().ToString("dd.MM.yyyy HH:mm:ss")
+        </p>
+    </section>
+
+    @if (dialog.PendingApproval is { } gate)
+    {
+        <section class="card gate">
+            <h2>Ожидает подтверждения: <strong>@gate.Tool</strong></h2>
+            <p>@gate.HumanDescription</p>
+            <h3>Аргументы (ПДн замаскированы)</h3>
+            <pre class="args">@PrettyArgs(gate.ArgsMasked)</pre>
+            <p class="muted">Истекает: @gate.ExpiresAt.ToLocalTime().ToString("dd.MM.yyyy HH:mm:ss")</p>
+
+            @if (canDecide)
+            {
+                <label>
+                    Комментарий (необязательно)
+                    <input @bind="comment" maxlength="500" />
+                </label>
+                <div class="row gap">
+                    <button class="primary" @onclick='() => DecideAsync("approve")' disabled="@saving">
+                        Подтвердить
+                    </button>
+                    <button class="danger" @onclick='() => DecideAsync("reject")' disabled="@saving">
+                        Отклонить
+                    </button>
+                </div>
+            }
+            else
+            {
+                <p class="muted">Решение по гейту доступно ролям admin и operator.</p>
+            }
+        </section>
+    }
+
+    <section class="card">
+        <h2>Сообщения</h2>
+        @foreach (var dialogMessage in dialog.Messages)
+        {
+            <article class="message role-@dialogMessage.Role">
+                <header>
+                    <span class="badge">@dialogMessage.Role</span>
+                    <span class="muted">@dialogMessage.Timestamp.ToLocalTime().ToString("HH:mm:ss")</span>
+                </header>
+                <p>@dialogMessage.Content</p>
+            </article>
+        }
+        @if (dialog.Messages.Count == 0)
+        {
+            <p class="muted">Сообщений нет.</p>
+        }
+    </section>
+
+    @if (dialog.PendingApproval is null)
+    {
+        <section class="card">
+            <h2>Продолжить диалог</h2>
+            <label>
+                Сообщение
+                <textarea rows="3" @bind="message"></textarea>
+            </label>
+            <button class="primary" @onclick="SendAsync" disabled="@saving">Отправить</button>
+        </section>
+    }
+}
+
+@code {
+    [Parameter]
+    public Guid SessionId { get; set; }
+
+    private Guid? tenantId;
+    private ClaimsPrincipal? user;
+    private bool canDecide;
+    private bool loading = true;
+    private bool saving;
+    private string? error;
+    private string? notice;
+    private string comment = string.Empty;
+    private string message = string.Empty;
+    private DialogDto? dialog;
+
+    protected override async Task OnParametersSetAsync()
+    {
+        var state = await AuthState.GetAuthenticationStateAsync();
+        user = state.User;
+        canDecide = CabinetClaims.CanDecide(user);
+        tenantId = CabinetClaims.GetTenantId(user);
+
+        await LoadAsync();
+        loading = false;
+    }
+
+    private async Task LoadAsync()
+    {
+        if (tenantId is not { } id || SessionId == Guid.Empty)
+        {
+            return;
+        }
+
+        try
+        {
+            dialog = await Api.GetDialogAsync(id, SessionId);
+        }
+        catch (CabinetApiException exception)
+        {
+            error = exception.Message;
+        }
+    }
+
+    private async Task DecideAsync(string decision)
+    {
+        if (dialog?.PendingApproval is not { } gate || tenantId is not { } id)
+        {
+            return;
+        }
+
+        saving = true;
+        error = null;
+        notice = null;
+
+        try
+        {
+            dialog = await Api.DecideAsync(
+                id,
+                dialog.SessionId,
+                gate.ApprovalId,
+                new ApprovalDecisionDto(
+                    decision,
+                    string.IsNullOrWhiteSpace(comment) ? null : comment,
+                    ActorId()));
+
+            notice = decision == "approve" ? "Гейт подтверждён, тул исполняется." : "Гейт отклонён.";
+            comment = string.Empty;
+        }
+        catch (CabinetApiException exception)
+        {
+            error = exception.Message;
+        }
+        finally
+        {
+            saving = false;
+        }
+    }
+
+    private async Task SendAsync()
+    {
+        if (dialog is null || tenantId is not { } id)
+        {
+            return;
+        }
+
+        if (string.IsNullOrWhiteSpace(message))
+        {
+            error = "Введите сообщение.";
+            return;
+        }
+
+        saving = true;
+        error = null;
+        notice = null;
+
+        try
+        {
+            dialog = await Api.SendMessageAsync(id, dialog.SessionId, message.Trim());
+            message = string.Empty;
+        }
+        catch (CabinetApiException exception)
+        {
+            error = exception.Message;
+        }
+        finally
+        {
+            saving = false;
+        }
+    }
+
+    private Guid? ActorId()
+        => user?.FindFirst(ClaimTypes.NameIdentifier) is { } claim && Guid.TryParse(claim.Value, out var id)
+            ? id
+            : null;
+
+    private static string PrettyArgs(string raw)
+    {
+        try
+        {
+            using var document = System.Text.Json.JsonDocument.Parse(raw);
+
+            return System.Text.Json.JsonSerializer.Serialize(
+                document.RootElement,
+                new System.Text.Json.JsonSerializerOptions { WriteIndented = true });
+        }
+        catch (System.Text.Json.JsonException)
+        {
+            return raw;
+        }
+    }
+}

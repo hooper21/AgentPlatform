@@ -1,0 +1,44 @@
+@page "/"
+@attribute [Authorize]
+@rendermode InteractiveServer
+
+<PageTitle>Кабинет тенанта</PageTitle>
+
+<h1>Кабинет тенанта</h1>
+
+<AuthorizeView>
+    <Authorized>
+        <p class="muted">
+            Вы вошли как <strong>@context.User.FindFirst(CabinetClaims.Email)?.Value</strong>
+            (роль <span class="role">@CabinetClaims.GetRole(context.User)</span>).
+        </p>
+
+        <div class="grid">
+            <a class="card link-card" href="/agents">
+                <h2>Агенты</h2>
+                <p>Промпт, модель, включённые тулы и политики. Повышать политику нельзя — только понижать.</p>
+            </a>
+            <a class="card link-card" href="/connectors">
+                <h2>Коннекторы</h2>
+                <p>Реестр, установка EchoTools и credentials (AES-256, KMS-заглушка).</p>
+            </a>
+            <a class="card link-card" href="/dialogs">
+                <h2>Диалоги</h2>
+                <p>Сессии с сообщениями и карточки HITL-гейтов: Подтвердить / Отклонить.</p>
+            </a>
+        </div>
+
+        @if (CabinetClaims.CanManage(context.User))
+        {
+            <p class="muted">Управление конфигурацией доступно: вы admin.</p>
+        }
+        else if (CabinetClaims.CanDecide(context.User))
+        {
+            <p class="muted">Доступны просмотр и решения по гейтам (operator).</p>
+        }
+        else
+        {
+            <p class="muted">Режим viewer: только просмотр.</p>
+        }
+    </Authorized>
+</AuthorizeView>

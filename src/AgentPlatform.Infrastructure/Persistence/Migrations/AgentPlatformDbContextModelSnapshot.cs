@@ -895,6 +895,50 @@ namespace AgentPlatform.Infrastructure.Persistence.Migrations
                     b.ToTable("tenants", (string)null);
                 });
 
+            modelBuilder.Entity("AgentPlatform.Infrastructure.Persistence.Entities.TenantSecret", b =>
+                {
+                    b.Property<Guid>("Id")
+                        .ValueGeneratedOnAdd()
+                        .HasColumnType("uuid")
+                        .HasColumnName("id");
+
+                    b.Property<string>("CipherText")
+                        .IsRequired()
+                        .HasColumnType("text")
+                        .HasColumnName("cipher_text");
+
+                    b.Property<DateTimeOffset>("CreatedAt")
+                        .ValueGeneratedOnAdd()
+                        .HasColumnType("timestamptz")
+                        .HasColumnName("created_at")
+                        .HasDefaultValueSql("now()");
+
+                    b.Property<string>("Ref")
+                        .IsRequired()
+                        .HasMaxLength(200)
+                        .HasColumnType("character varying(200)")
+                        .HasColumnName("ref");
+
+                    b.Property<Guid>("TenantId")
+                        .HasColumnType("uuid")
+                        .HasColumnName("tenant_id");
+
+                    b.Property<DateTimeOffset>("UpdatedAt")
+                        .ValueGeneratedOnAdd()
+                        .HasColumnType("timestamptz")
+                        .HasColumnName("updated_at")
+                        .HasDefaultValueSql("now()");
+
+                    b.HasKey("Id")
+                        .HasName("pk_tenant_secrets");
+
+                    b.HasIndex("TenantId", "Ref")
+                        .IsUnique()
+                        .HasDatabaseName("ux_tenant_secrets_tenant_ref");
+
+                    b.ToTable("tenant_secrets", (string)null);
+                });
+
             modelBuilder.Entity("AgentPlatform.Infrastructure.Persistence.Entities.ToolAuditEntry", b =>
                 {
                     b.Property<long>("Id")
@@ -1370,6 +1414,16 @@ namespace AgentPlatform.Infrastructure.Persistence.Migrations
                         .HasConstraintName("fk_scheduled_runs_tenants_tenant_id");
 
                     b.Navigation("Agent");
+                });
+
+            modelBuilder.Entity("AgentPlatform.Infrastructure.Persistence.Entities.TenantSecret", b =>
+                {
+                    b.HasOne("AgentPlatform.Infrastructure.Persistence.Entities.Tenant", null)
+                        .WithMany()
+                        .HasForeignKey("TenantId")
+                        .OnDelete(DeleteBehavior.Cascade)
+                        .IsRequired()
+                        .HasConstraintName("fk_tenant_secrets_tenants_tenant_id");
                 });
 
             modelBuilder.Entity("AgentPlatform.Infrastructure.Persistence.Entities.ToolAuditEntry", b =>

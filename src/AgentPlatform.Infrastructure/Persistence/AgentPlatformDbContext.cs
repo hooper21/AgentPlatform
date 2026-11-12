@@ -46,6 +46,8 @@ public sealed class AgentPlatformDbContext(DbContextOptions<AgentPlatformDbConte
 
     public DbSet<SolutionProfile> SolutionProfiles => Set<SolutionProfile>();
 
+    public DbSet<TenantSecret> TenantSecrets => Set<TenantSecret>();
+
     protected override void OnModelCreating(ModelBuilder modelBuilder)
     {
         ArgumentNullException.ThrowIfNull(modelBuilder);

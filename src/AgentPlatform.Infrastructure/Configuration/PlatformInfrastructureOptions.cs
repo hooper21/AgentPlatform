@@ -38,6 +38,7 @@ public sealed class SeedOptions
     public const string PasswordEnvironmentVariable = "AGENTPLATFORM_SEED_ADMIN_PASSWORD";
     public const string EmailEnvironmentVariable = "AGENTPLATFORM_SEED_ADMIN_EMAIL";
     public const string TenantNameEnvironmentVariable = "AGENTPLATFORM_SEED_TENANT_NAME";
+    public const string RoleUsersEnvironmentVariable = "AGENTPLATFORM_SEED_ROLE_USERS";
 
     /// <summary>Имя тестового тенанта.</summary>
     public string TenantName { get; set; } = "Demo Tenant";
@@ -50,6 +51,12 @@ public sealed class SeedOptions
 
     /// <summary>Пароль администратора (только из env, в файлах не хранится).</summary>
     public string? AdminPassword { get; set; }
+
+    /// <summary>
+    /// Создать демо-пользователей operator@demo.local и viewer@demo.local
+    /// с тем же паролем (env AGENTPLATFORM_SEED_ROLE_USERS=true). Для проверки ролей.
+    /// </summary>
+    public bool SeedRoleUsers { get; set; }
 
     /// <summary>Собирает параметры seed из окружения.</summary>
     public static SeedOptions FromEnvironment()
@@ -70,6 +77,9 @@ public sealed class SeedOptions
         {
             options.TenantName = tenantName;
         }
+
+        options.SeedRoleUsers = PlatformInfrastructureOptions.IsTruthy(
+            Environment.GetEnvironmentVariable(RoleUsersEnvironmentVariable));
 
         return options;
     }

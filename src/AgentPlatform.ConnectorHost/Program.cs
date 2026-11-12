@@ -38,7 +38,8 @@ app.MapGet("/api/v1/connectors/echo/manifest", () => Results.Json(echoManifest, 
 
 // TODO(2.2): подключение внешних MCP-серверов (external_mcp), health-check установок,
 // применение лимитов и кеша read-тулов.
-app.MapMcp();
+// MCP endpoint фиксирован (/mcp): Controller обращается к нему как к Connector Host.
+app.MapMcp("/mcp");
 
 app.Run();
 

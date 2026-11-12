@@ -1,0 +1,18 @@
+@using AgentPlatform.TenantApp.Components.Layout
+
+<Router AppAssembly="typeof(Program).Assembly">
+    <Found Context="routeData">
+        <AuthorizeRouteView RouteData="routeData" DefaultLayout="typeof(MainLayout)">
+            <NotAuthorized>
+                <RedirectToLogin />
+            </NotAuthorized>
+        </AuthorizeRouteView>
+        <FocusOnNavigate RouteData="routeData" Selector="h1" />
+    </Found>
+    <NotFound>
+        <LayoutView Layout="typeof(MainLayout)">
+            <h1>Страница не найдена</h1>
+            <p>Проверьте адрес или вернитесь в <a href="/">кабинет</a>.</p>
+        </LayoutView>
+    </NotFound>
+</Router>

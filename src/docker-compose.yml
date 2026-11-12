@@ -63,6 +63,8 @@ services:
       AGENTPLATFORM_SEED_ADMIN_PASSWORD: ${AGENTPLATFORM_SEED_ADMIN_PASSWORD:?задайте AGENTPLATFORM_SEED_ADMIN_PASSWORD в .env}
       AGENTPLATFORM_SEED_ADMIN_EMAIL: ${AGENTPLATFORM_SEED_ADMIN_EMAIL:-admin@demo.local}
       AGENTPLATFORM_SEED_TENANT_NAME: ${AGENTPLATFORM_SEED_TENANT_NAME:-Demo Tenant}
+      # Демо-пользователи operator@demo.local и viewer@demo.local (пароль админа).
+      AGENTPLATFORM_SEED_ROLE_USERS: ${AGENTPLATFORM_SEED_ROLE_USERS:-true}
     depends_on:
       postgres:
         condition: service_healthy
@@ -92,11 +94,19 @@ services:
     image: agentplatform/controller:${AGENTPLATFORM_IMAGE_TAG:-dev}
     environment:
       <<: *service-environment
+      # MCP-транспорт тулов: Controller → Connector Host (streamable HTTP).
+      ConnectorHost__BaseUrl: http://connector-host:8080
+      # KMS-заглушка: base64 32-байтный ключ AES-256 (TODO: реальный KMS).
+      AGENTPLATFORM_SECRETS_MASTER_KEY: ${AGENTPLATFORM_SECRETS_MASTER_KEY:-YWdlbnRwbGF0Zm9ybS1kZXYtbWFzdGVyLWtleS0zMmI=}
     ports:
       - "8081:8080"
     depends_on:
       postgres:
         condition: service_healthy
+      migrate:
+        condition: service_completed_successfully
+      connector-host:
+        condition: service_started
     healthcheck: *app-healthcheck
 
   tenant-app:
@@ -107,6 +117,8 @@ services:
     image: agentplatform/tenant-app:${AGENTPLATFORM_IMAGE_TAG:-dev}
     environment:
       <<: *service-environment
+      # Кабинет (Blazor) — BFF: данные и решения по гейтам идут через Controller API.
+      Controller__BaseUrl: http://controller:8080
     ports:
       - "8082:8080"
     depends_on:
@@ -114,6 +126,8 @@ services:
         condition: service_healthy
       migrate:
         condition: service_completed_successfully
+      controller:
+        condition: service_started
     healthcheck: *app-healthcheck
 
   connector-host:

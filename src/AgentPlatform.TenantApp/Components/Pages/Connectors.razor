@@ -1,0 +1,300 @@
+@page "/connectors"
+@attribute [Authorize]
+@rendermode InteractiveServer
+@inject ControllerApiClient Api
+@inject AuthenticationStateProvider AuthState
+@inject IJSRuntime JS
+
+<PageTitle>Коннекторы</PageTitle>
+<h1>Коннекторы</h1>
+<p class="muted">
+    Credentials шифруются AES-256-GCM на Controller (KMS — заглушка с TODO) и не возвращаются в API.
+    Токен доступа виден только Connector Host.
+</p>
+
+@if (!string.IsNullOrWhiteSpace(error))
+{
+    <div class="alert alert-error">@error</div>
+}
+@if (!string.IsNullOrWhiteSpace(notice))
+{
+    <div class="alert alert-ok">@notice</div>
+}
+
+<section class="card">
+    <h2>Реестр платформы</h2>
+    <div class="grid">
+        @foreach (var connector in catalog)
+        {
+            <article class="card inner">
+                <h3>@connector.Name <span class="badge">@connector.Version</span></h3>
+                <p>@connector.Description</p>
+                <p class="muted">auth: @connector.AuthType · тулы: @connector.Tools.Count</p>
+                <ul class="tools">
+                    @foreach (var tool in connector.Tools)
+                    {
+                        <li><strong>@tool.Name</strong> <span class="badge">@tool.Policy</span></li>
+                    }
+                </ul>
+
+                @if (canManage && !IsInstalled(connector.Id))
+                {
+                    <button class="primary" @onclick="() => BeginInstall(connector)">Установить</button>
+                }
+                else if (IsInstalled(connector.Id))
+                {
+                    <span class="badge badge-ok">установлен</span>
+                }
+            </article>
+        }
+    </div>
+</section>
+
+@if (installTarget is not null)
+{
+    <section class="card">
+        <h2>Установка: @installTarget.Name @installTarget.Version</h2>
+        <p class="muted">Auth: @installTarget.AuthType</p>
+
+        @foreach (var field in installTarget.AuthFields)
+        {
+            <label>
+                @field
+                <input type="password" value="@credentials.GetValueOrDefault(field)"
+                       @onchange="eventArgs => credentials[field] = eventArgs.Value?.ToString() ?? string.Empty" />
+            </label>
+        }
+
+        @if (installTarget.AuthType == "external_mcp")
+        {
+            <label>
+                URL внешнего MCP (для платформенного echo не требуется)
+                <input @bind="externalUrl" placeholder="https://mcp.example.com/mcp" />
+            </label>
+        }
+
+        <div class="row gap">
+            <button class="primary" @onclick="InstallAsync" disabled="@saving">Установить</button>
+            <button class="ghost" @onclick="CancelInstall" disabled="@saving">Отмена</button>
+        </div>
+    </section>
+}
+
+<section class="card">
+    <h2>Установленные</h2>
+    @if (installations.Count == 0)
+    {
+        <p class="muted">Пока ничего не установлено.</p>
+    }
+    else
+    {
+        <table>
+            <thead>
+                <tr><th>Коннектор</th><th>Auth</th><th>Статус</th><th>Тулы</th><th></th></tr>
+            </thead>
+            <tbody>
+                @foreach (var installation in installations)
+                {
+                    <tr>
+                        <td>
+                            <strong>@installation.ConnectorName</strong>
+                            <span class="muted">@installation.ConnectorVersion</span>
+                        </td>
+                        <td>@installation.AuthType</td>
+                        <td><span class="badge">@installation.Status</span></td>
+                        <td>@installation.ToolCount</td>
+                        <td class="row gap">
+                            @if (canManage)
+                            {
+                                <button class="ghost" @onclick="() => ToggleStatusAsync(installation)" disabled="@saving">
+                                    @(installation.Status == "active" ? "Отключить" : "Включить")
+                                </button>
+                                <button class="danger" @onclick="() => DeleteAsync(installation)" disabled="@saving">Удалить</button>
+                            }
+                        </td>
+                    </tr>
+                }
+            </tbody>
+        </table>
+    }
+</section>
+
+@code {
+    private Guid? tenantId;
+    private bool canManage;
+    private bool saving;
+    private string? error;
+    private string? notice;
+
+    private List<ConnectorCatalogDto> catalog = [];
+    private List<ConnectorInstallationDto> installations = [];
+
+    private ConnectorCatalogDto? installTarget;
+    private readonly Dictionary<string, string> credentials = new(StringComparer.Ordinal);
+    private string? externalUrl;
+
+    protected override async Task OnInitializedAsync()
+    {
+        var state = await AuthState.GetAuthenticationStateAsync();
+        canManage = CabinetClaims.CanManage(state.User);
+        tenantId = CabinetClaims.GetTenantId(state.User);
+
+        if (tenantId is null)
+        {
+            error = "В claim пользователя нет tenant_id: перелогиньтесь.";
+            return;
+        }
+
+        await ReloadAsync();
+    }
+
+    private async Task ReloadAsync()
+    {
+        if (tenantId is not { } id)
+        {
+            return;
+        }
+
+        try
+        {
+            // Best-effort: подтягиваем манифест EchoTools из Connector Host в реестр.
+            await Api.SyncConnectorRegistryAsync();
+
+            catalog = (await Api.GetCatalogAsync(id)).ToList();
+            installations = (await Api.GetInstallationsAsync(id)).ToList();
+        }
+        catch (CabinetApiException exception)
+        {
+            error = exception.Message;
+        }
+    }
+
+    private bool IsInstalled(Guid registryId)
+        => installations.Any(installation => installation.RegistryId == registryId);
+
+    private void BeginInstall(ConnectorCatalogDto connector)
+    {
+        error = null;
+        notice = null;
+        installTarget = connector;
+        credentials.Clear();
+        externalUrl = null;
+
+        foreach (var field in connector.AuthFields)
+        {
+            credentials[field] = string.Empty;
+        }
+    }
+
+    private void CancelInstall()
+    {
+        installTarget = null;
+        credentials.Clear();
+        externalUrl = null;
+    }
+
+    private async Task InstallAsync()
+    {
+        if (installTarget is null || tenantId is not { } id)
+        {
+            return;
+        }
+
+        saving = true;
+        error = null;
+        notice = null;
+
+        try
+        {
+            var filled = credentials
+                .Where(pair => !string.IsNullOrWhiteSpace(pair.Value))
+                .ToDictionary(pair => pair.Key, pair => pair.Value, StringComparer.Ordinal);
+
+            var request = new ConnectorInstallDto(
+                installTarget.Id,
+                filled.Count == 0 ? null : filled,
+                string.IsNullOrWhiteSpace(externalUrl) ? null : externalUrl.Trim());
+
+            var installed = await Api.InstallConnectorAsync(id, request);
+            notice = $"Коннектор {installed.ConnectorName} установлен.";
+            CancelInstall();
+            await ReloadAsync();
+        }
+        catch (CabinetApiException exception)
+        {
+            error = exception.Message;
+        }
+        finally
+        {
+            saving = false;
+        }
+    }
+
+    private async Task ToggleStatusAsync(ConnectorInstallationDto installation)
+    {
+        if (tenantId is not { } id)
+        {
+            return;
+        }
+
+        saving = true;
+        error = null;
+        notice = null;
+
+        try
+        {
+            var status = installation.Status == "active" ? "disabled" : "active";
+            await Api.UpdateInstallationAsync(
+                id,
+                installation.Id,
+                new ConnectorInstallUpdateDto(status, null, null));
+
+            notice = $"Статус изменён: {status}.";
+            await ReloadAsync();
+        }
+        catch (CabinetApiException exception)
+        {
+            error = exception.Message;
+        }
+        finally
+        {
+            saving = false;
+        }
+    }
+
+    private async Task DeleteAsync(ConnectorInstallationDto installation)
+    {
+        if (tenantId is not { } id)
+        {
+            return;
+        }
+
+        var confirmed = await JS.InvokeAsync<bool>(
+            "confirm",
+            $"Удалить установку «{installation.ConnectorName}»? Секрет будет удалён.");
+
+        if (!confirmed)
+        {
+            return;
+        }
+
+        saving = true;
+        error = null;
+        notice = null;
+
+        try
+        {
+            await Api.DeleteInstallationAsync(id, installation.Id);
+            notice = "Установка удалена.";
+            await ReloadAsync();
+        }
+        catch (CabinetApiException exception)
+        {
+            error = exception.Message;
+        }
+        finally
+        {
+            saving = false;
+        }
+    }
+}

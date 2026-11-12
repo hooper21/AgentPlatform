@@ -1,3 +1,4 @@
+using AgentPlatform.Controller.Composition;
 using AgentPlatform.Controller.Endpoints;
 using AgentPlatform.Core.Abstractions;
 using AgentPlatform.Core.Dto;
@@ -12,6 +13,9 @@ var builder = WebApplication.CreateBuilder(args);
 
 // Внутренний API платформы: работает с глобальными таблицами и cross-tenant выборками.
 builder.Services.AddPlatformInfrastructure(PlatformInfrastructureOptions.FromEnvironment());
+
+// Runtime, Secret Service и MCP-транспорт для диалогов/гейтов кабинета.
+builder.Services.AddControllerServices(builder.Configuration);
 
 var app = builder.Build();
 
@@ -31,7 +35,15 @@ app.MapGet("/", () => Results.Ok(new
         "/api/v1/internal/tenants/{tenantId}/users",
         "/api/v1/internal/tool-settings/validate",
         "GET/POST /api/v1/internal/tenants/{tenantId}/scheduled-runs",
-        "GET/PUT/DELETE /api/v1/internal/tenants/{tenantId}/scheduled-runs/{id}"
+        "GET/PUT/DELETE /api/v1/internal/tenants/{tenantId}/scheduled-runs/{id}",
+        "GET/POST /api/v1/internal/tenants/{tenantId}/agents",
+        "GET/PUT/DELETE /api/v1/internal/tenants/{tenantId}/agents/{id}",
+        "GET /api/v1/internal/tenants/{tenantId}/connector-registry",
+        "GET/POST /api/v1/internal/tenants/{tenantId}/connector-installations",
+        "GET/PUT/DELETE /api/v1/internal/tenants/{tenantId}/connector-installations/{id}/tool-settings",
+        "GET/POST /api/v1/internal/tenants/{tenantId}/dialogs",
+        "GET /api/v1/internal/tenants/{tenantId}/dialogs/{sessionId}",
+        "POST /api/v1/internal/tenants/{tenantId}/dialogs/{sessionId}/approvals/{approvalId}/decision"
     }
 }));
 
@@ -75,6 +87,11 @@ app.MapToolSettingEndpoints();
 // Scheduler: управление расписаниями cron-запусков (scheduled_runs) без UI.
 app.MapScheduledRunEndpoints();
 
-// TODO(3.x): панель оператора платформы — каталог коннекторов, шаблоны решений, аудит платформы.
+// Кабинет тенанта: агенты, коннекторы, tool_settings и диалоги с HITL-гейтами.
+app.MapAgentEndpoints();
+app.MapConnectorEndpoints();
+app.MapCabinetDialogEndpoints();
+
+// TODO(3.x): панель оператора платформы — шаблоны решений, аудит платформы.
 app.Run();
 

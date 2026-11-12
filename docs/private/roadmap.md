@@ -239,7 +239,7 @@ amo_move_lead
 
 1. Инжест: MD/TXT → затем PDF/DOCX; страницы сайта (один уровень,
    robots.txt).
-2. Чанкинг: 500 токенов, перекрытие 50, заголовки — метаданные.
+2. Чанкинг: 1000 токенов, перекрытие 50, заголовки — метаданные.
 3. Эмбеддинги через IChatClient (модель-эмбеддер в конфиге тенанта;
    MVP — Ollama nomic-embed-text), индекс pgvector.
 4. RAG API: Search(tenantId, query, topK, threshold) — Runtime подключает

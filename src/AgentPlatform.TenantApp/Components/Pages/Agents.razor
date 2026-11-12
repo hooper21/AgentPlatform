@@ -1,0 +1,411 @@
+@page "/agents"
+@attribute [Authorize]
+@rendermode InteractiveServer
+@inject ControllerApiClient Api
+@inject AuthenticationStateProvider AuthState
+@inject IJSRuntime JS
+
+<PageTitle>Агенты</PageTitle>
+<h1>Агенты</h1>
+<p class="muted">
+    Политика тула берётся из манифеста и может только понижаться. Проверка — на клиенте и в Controller API.
+</p>
+
+@if (!string.IsNullOrWhiteSpace(error))
+{
+    <div class="alert alert-error">@error</div>
+}
+@if (!string.IsNullOrWhiteSpace(notice))
+{
+    <div class="alert alert-ok">@notice</div>
+}
+
+<div class="split">
+    <section class="card list">
+        <div class="row between">
+            <h2>Список</h2>
+            @if (canManage)
+            {
+                <button class="primary" @onclick="NewAgent">Новый агент</button>
+            }
+        </div>
+
+        @if (loading)
+        {
+            <p class="muted">Загрузка…</p>
+        }
+
+        @foreach (var agent in agents)
+        {
+            <button class="list-item @(editor?.Id == agent.Id ? "active" : string.Empty)"
+                    @onclick="() => EditAgent(agent)">
+                <strong>@agent.Name</strong>
+                <span>v@agent.CurrentVersion · @agent.Model · тулов: @agent.Tools.Count</span>
+            </button>
+        }
+
+        @if (!loading && agents.Count == 0)
+        {
+            <p class="muted">Агентов пока нет.</p>
+        }
+    </section>
+
+    @if (editor is not null)
+    {
+        <section class="card">
+            <h2>@(editor.Id is null ? "Новый агент" : $"Агент «{editor.Name}» · v{editor.CurrentVersion}")</h2>
+
+            <div class="form-grid">
+                <label>Имя <input @bind="editor.Name" disabled="@(!canManage)" maxlength="200" /></label>
+                <label>Модель <input @bind="editor.Model" disabled="@(!canManage)" /></label>
+                <label>
+                    Маршрутизация
+                    <select @bind="editor.Routing" disabled="@(!canManage)">
+                        <option value="simple">simple</option>
+                        <option value="complex">complex</option>
+                    </select>
+                </label>
+                <label>Макс. ходов <input type="number" min="1" max="1000" @bind="editor.MaxTurns" disabled="@(!canManage)" /></label>
+                <label>Макс. тулов <input type="number" min="1" max="1000" @bind="editor.MaxToolCalls" disabled="@(!canManage)" /></label>
+            </div>
+
+            <label>Системный промпт
+                <textarea rows="6" @bind="editor.SystemPrompt" disabled="@(!canManage)"></textarea>
+            </label>
+
+            <h3>Тулы коннекторов</h3>
+            @if (editor.Tools.Count == 0)
+            {
+                <p class="muted">Нет установленных коннекторов: установите EchoTools в разделе «Коннекторы».</p>
+            }
+            else
+            {
+                <table>
+                    <thead>
+                        <tr><th>Вкл.</th><th>Тул</th><th>Политика</th><th>Гейт</th></tr>
+                    </thead>
+                    <tbody>
+                        @foreach (var tool in editor.Tools)
+                        {
+                            <tr>
+                                <td><input type="checkbox" @bind="tool.Selected" disabled="@(!canManage)" /></td>
+                                <td>
+                                    <strong>@tool.ToolName</strong><br />
+                                    <span class="muted">@tool.InstallationLabel</span>
+                                </td>
+                                <td>
+                                    <span class="badge">@tool.ManifestPolicy</span>
+                                    <select @bind="tool.Policy" disabled="@(!canManage || !tool.Selected)">
+                                        @foreach (var option in PolicyOptions(tool.ManifestPolicy))
+                                        {
+                                            <option value="@option">@option</option>
+                                        }
+                                    </select>
+                                </td>
+                                <td>
+                                    <select @bind="tool.GateMode" disabled="@(!canManage || !tool.Selected)">
+                                        <option value="always">always</option>
+                                        <option value="never">never</option>
+                                    </select>
+                                </td>
+                            </tr>
+                        }
+                    </tbody>
+                </table>
+            }
+
+            @if (canManage)
+            {
+                <div class="row gap">
+                    <button class="primary" @onclick="SaveAsync" disabled="@saving">
+                        @(editor.Id is null ? "Создать" : "Опубликовать новую версию")
+                    </button>
+                    @if (editor.Id is not null)
+                    {
+                        <button class="danger" @onclick="DeleteAsync" disabled="@saving">Удалить</button>
+                    }
+                    <button class="ghost" @onclick="Cancel" disabled="@saving">Отмена</button>
+                </div>
+            }
+            else
+            {
+                <p class="muted">Изменения доступны только роли admin.</p>
+            }
+        </section>
+    }
+</div>
+
+@code {
+    private Guid? tenantId;
+    private ClaimsPrincipal? user;
+    private bool canManage;
+    private bool loading = true;
+    private bool saving;
+    private string? error;
+    private string? notice;
+
+    private List<AgentDto> agents = [];
+    private List<ConnectorCatalogDto> catalog = [];
+    private List<ConnectorInstallationDto> installations = [];
+    private AgentEditor? editor;
+
+    protected override async Task OnInitializedAsync()
+    {
+        var state = await AuthState.GetAuthenticationStateAsync();
+        user = state.User;
+        canManage = CabinetClaims.CanManage(user);
+        tenantId = CabinetClaims.GetTenantId(user);
+
+        if (tenantId is null)
+        {
+            error = "В claim пользователя нет tenant_id: перелогиньтесь.";
+            loading = false;
+            return;
+        }
+
+        await ReloadAsync();
+        loading = false;
+    }
+
+    private async Task ReloadAsync()
+    {
+        if (tenantId is not { } id)
+        {
+            return;
+        }
+
+        try
+        {
+            agents = (await Api.GetAgentsAsync(id)).ToList();
+            catalog = (await Api.GetCatalogAsync(id)).ToList();
+            installations = (await Api.GetInstallationsAsync(id)).ToList();
+        }
+        catch (CabinetApiException exception)
+        {
+            error = exception.Message;
+        }
+    }
+
+    private void NewAgent()
+    {
+        error = null;
+        notice = null;
+        editor = new AgentEditor
+        {
+            Tools = BuildToolEditors(null)
+        };
+    }
+
+    private void EditAgent(AgentDto agent)
+    {
+        error = null;
+        notice = null;
+        editor = new AgentEditor
+        {
+            Id = agent.Id,
+            CurrentVersion = agent.CurrentVersion,
+            Name = agent.Name,
+            SystemPrompt = agent.SystemPrompt,
+            Model = agent.Model,
+            Routing = agent.Routing,
+            MaxTurns = agent.MaxTurns,
+            MaxToolCalls = agent.MaxToolCalls,
+            Tools = BuildToolEditors(agent)
+        };
+    }
+
+    private void Cancel()
+    {
+        editor = null;
+        error = null;
+        notice = null;
+    }
+
+    private List<ToolEditor> BuildToolEditors(AgentDto? agent)
+    {
+        var tools = new List<ToolEditor>();
+
+        foreach (var installation in installations)
+        {
+            var connector = catalog.FirstOrDefault(item => item.Id == installation.RegistryId);
+            if (connector is null)
+            {
+                continue;
+            }
+
+            foreach (var tool in connector.Tools)
+            {
+                var saved = agent?.Tools.FirstOrDefault(candidate =>
+                    candidate.InstallationId == installation.Id
+                    && string.Equals(candidate.ToolName, tool.Name, StringComparison.Ordinal));
+
+                tools.Add(new ToolEditor
+                {
+                    InstallationId = installation.Id,
+                    InstallationLabel = $"{connector.Name} {connector.Version}",
+                    ToolName = tool.Name,
+                    ManifestPolicy = tool.Policy,
+                    Selected = saved is not null,
+                    Policy = saved?.EffectivePolicy ?? tool.Policy,
+                    GateMode = saved?.GateMode ?? (tool.Policy == "read" ? "never" : "always")
+                });
+            }
+        }
+
+        return tools;
+    }
+
+    private static readonly string[] PolicyOrder = ["read", "write", "destructive"];
+
+    private static IEnumerable<string> PolicyOptions(string manifestPolicy)
+        => PolicyOrder.Where(policy => Rank(policy) <= Rank(manifestPolicy));
+
+    private static int Rank(string policy) => Array.IndexOf(PolicyOrder, policy) is var index && index >= 0
+        ? index
+        : 0;
+
+    private async Task SaveAsync()
+    {
+        if (editor is null || tenantId is not { } id || !canManage)
+        {
+            return;
+        }
+
+        error = null;
+        notice = null;
+
+        if (string.IsNullOrWhiteSpace(editor.Name))
+        {
+            error = "Укажите имя агента.";
+            return;
+        }
+
+        if (string.IsNullOrWhiteSpace(editor.SystemPrompt))
+        {
+            error = "Укажите системный промпт.";
+            return;
+        }
+
+        if (string.IsNullOrWhiteSpace(editor.Model))
+        {
+            error = "Укажите модель.";
+            return;
+        }
+
+        var selected = editor.Tools.Where(tool => tool.Selected).ToList();
+
+        foreach (var tool in selected)
+        {
+            // Клиентская проверка: повышение политики запрещено (API повторит проверку).
+            if (Rank(tool.Policy) > Rank(tool.ManifestPolicy))
+            {
+                error = $"Политика '{tool.Policy}' выше манифестной '{tool.ManifestPolicy}' для {tool.ToolName}.";
+                return;
+            }
+        }
+
+        var request = new AgentSaveDto(
+            editor.Name.Trim(),
+            editor.SystemPrompt.Trim(),
+            editor.Model.Trim(),
+            editor.Routing,
+            selected
+                .Select(tool => new AgentToolSaveDto(
+                    tool.InstallationId,
+                    tool.ToolName,
+                    tool.Policy,
+                    GateSettingsFor(tool)))
+                .ToList(),
+            editor.MaxTurns,
+            editor.MaxToolCalls,
+            user?.FindFirst(ClaimTypes.NameIdentifier) is { } claim && Guid.TryParse(claim.Value, out var actorId)
+                ? actorId
+                : null);
+
+        saving = true;
+        var isNew = editor.Id is null;
+
+        try
+        {
+            var saved = editor.Id is { } agentId
+                ? await Api.UpdateAgentAsync(id, agentId, request)
+                : await Api.CreateAgentAsync(id, request);
+
+            await ReloadAsync();
+            EditAgent(saved);
+            notice = isNew ? "Агент создан (версия 1)." : $"Опубликована версия v{saved.CurrentVersion}.";
+        }
+        catch (CabinetApiException exception)
+        {
+            error = exception.Message;
+        }
+        finally
+        {
+            saving = false;
+        }
+    }
+
+    private async Task DeleteAsync()
+    {
+        if (editor?.Id is not { } agentId || tenantId is not { } id || !canManage)
+        {
+            return;
+        }
+
+        var confirmed = await JS.InvokeAsync<bool>(
+            "confirm",
+            $"Удалить агента «{editor.Name}»? Действие необратимо.");
+
+        if (!confirmed)
+        {
+            return;
+        }
+
+        saving = true;
+
+        try
+        {
+            await Api.DeleteAgentAsync(id, agentId);
+            editor = null;
+            await ReloadAsync();
+            notice = "Агент удалён.";
+        }
+        catch (CabinetApiException exception)
+        {
+            error = exception.Message;
+        }
+        finally
+        {
+            saving = false;
+        }
+    }
+
+    private static string GateSettingsFor(ToolEditor tool)
+        => tool.GateMode == "never"
+            ? """{"mode":"never"}"""
+            : """{"mode":"always"}""";
+
+    private sealed class AgentEditor
+    {
+        public Guid? Id;
+        public int CurrentVersion;
+        public string Name = string.Empty;
+        public string SystemPrompt = string.Empty;
+        public string Model = "platform-default";
+        public string Routing = "simple";
+        public int MaxTurns = 10;
+        public int MaxToolCalls = 8;
+        public List<ToolEditor> Tools = [];
+    }
+
+    private sealed class ToolEditor
+    {
+        public Guid InstallationId;
+        public string InstallationLabel = string.Empty;
+        public string ToolName = string.Empty;
+        public string ManifestPolicy = "read";
+        public string Policy = "read";
+        public string GateMode = "never";
+        public bool Selected;
+    }
+}

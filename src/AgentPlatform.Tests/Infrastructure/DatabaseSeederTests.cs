@@ -54,6 +54,33 @@ public sealed class DatabaseSeederTests
     }
 
     [Fact]
+    public async Task Seed_creates_operator_and_viewer_when_role_users_flag_is_enabled()
+    {
+        using var database = TestDatabase.Create();
+        var options = CreateOptions();
+        options.SeedRoleUsers = true;
+        var seeder = new DatabaseSeeder(
+            database.Context,
+            new Pbkdf2PasswordHasher(),
+            options,
+            NullLogger<DatabaseSeeder>.Instance);
+
+        await seeder.SeedAsync();
+
+        var users = await database.Context.Users.OrderBy(user => user.Email).ToListAsync();
+        Assert.Equal(3, users.Count);
+        Assert.Equal("admin@demo.local", users[0].Email);
+        Assert.Equal("admin", users[0].Role);
+        Assert.Equal("operator@demo.local", users[1].Email);
+        Assert.Equal("operator", users[1].Role);
+        Assert.Equal("viewer@demo.local", users[2].Email);
+        Assert.Equal("viewer", users[2].Role);
+
+        var hasher = new Pbkdf2PasswordHasher();
+        Assert.All(users, user => Assert.True(hasher.Verify(AdminPassword, user.PasswordHash)));
+    }
+
+    [Fact]
     public async Task Seed_without_admin_password_throws()
     {
         using var database = TestDatabase.Create();

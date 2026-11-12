@@ -1,0 +1,37 @@
+@inherits LayoutComponentBase
+
+<div class="app">
+    <header class="topbar">
+        <a class="brand" href="/">
+            <span class="brand-mark">AP</span>
+            <span>Agent Platform · Кабинет тенанта</span>
+        </a>
+
+        <AuthorizeView>
+            <Authorized>
+                <nav class="nav">
+                    <NavLink href="/agents">Агенты</NavLink>
+                    <NavLink href="/connectors">Коннекторы</NavLink>
+                    <NavLink href="/dialogs">Диалоги</NavLink>
+                </nav>
+
+                <div class="userbox">
+                    <span class="email">@context.User.FindFirst(CabinetClaims.Email)?.Value</span>
+                    <span class="role">@CabinetClaims.GetRole(context.User)</span>
+                    <form method="post" action="/api/cabinet/logout">
+                        <AntiforgeryToken />
+                        <button class="link-button" type="submit">Выйти</button>
+                    </form>
+                </div>
+            </Authorized>
+        </AuthorizeView>
+    </header>
+
+    <main class="content">
+        @Body
+    </main>
+
+    <footer class="footer">
+        Agent Platform · Tenant App (Blazor Web App) · Controller API
+    </footer>
+</div>

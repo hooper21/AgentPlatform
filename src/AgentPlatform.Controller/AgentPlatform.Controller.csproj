@@ -3,6 +3,13 @@
   <ItemGroup>
     <ProjectReference Include="..\AgentPlatform.Infrastructure\AgentPlatform.Infrastructure.csproj" />
     <ProjectReference Include="..\AgentPlatform.Core\AgentPlatform.Core.csproj" />
+    <ProjectReference Include="..\AgentPlatform.LlmGateway\AgentPlatform.LlmGateway.csproj" />
+    <ProjectReference Include="..\AgentPlatform.Runtime\AgentPlatform.Runtime.csproj" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <!-- MCP-клиент к Connector Host: фиксированный SDK платформы (README). -->
+    <PackageReference Include="ModelContextProtocol" Version="2.4.0" />
   </ItemGroup>
 
   <PropertyGroup>

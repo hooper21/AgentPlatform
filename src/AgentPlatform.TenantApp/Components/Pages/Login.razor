@@ -1,0 +1,50 @@
+@page "/login"
+@layout AgentPlatform.TenantApp.Components.Layout.MainLayout
+@attribute [AllowAnonymous]
+
+<PageTitle>Вход в кабинет</PageTitle>
+
+<div class="login-wrap">
+    <section class="card login-card">
+        <h1>Вход в кабинет</h1>
+        <p class="muted">Пользователи тенанта: admin / operator / viewer.</p>
+
+        @if (!string.IsNullOrWhiteSpace(Error))
+        {
+            <div class="alert alert-error">
+                @(Error switch
+                {
+                    "invalid" => "Неверный email или пароль.",
+                    "required" => "Укажите email и пароль.",
+                    "antiforgery" => "Форма устарела, обновите страницу и повторите вход.",
+                    _ => "Не удалось выполнить вход."
+                })
+            </div>
+        }
+
+        <form method="post" action="/api/cabinet/login" class="stack">
+            <AntiforgeryToken />
+            <input type="hidden" name="returnUrl" value="@ReturnUrl" />
+
+            <label>
+                Email
+                <input name="email" type="email" autocomplete="username" required autofocus />
+            </label>
+
+            <label>
+                Пароль
+                <input name="password" type="password" autocomplete="current-password" required />
+            </label>
+
+            <button class="primary" type="submit">Войти</button>
+        </form>
+    </section>
+</div>
+
+@code {
+    [SupplyParameterFromQuery(Name = "returnUrl")]
+    public string? ReturnUrl { get; set; }
+
+    [SupplyParameterFromQuery(Name = "error")]
+    public string? Error { get; set; }
+}

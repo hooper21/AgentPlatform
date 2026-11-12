@@ -1,0 +1,182 @@
+@page "/dialogs"
+@attribute [Authorize]
+@rendermode InteractiveServer
+@inject ControllerApiClient Api
+@inject AuthenticationStateProvider AuthState
+@inject NavigationManager Navigation
+
+<PageTitle>Диалоги</PageTitle>
+<h1>Диалоги</h1>
+<p class="muted">
+    Сообщение → агент вызывает тул → пауза на гейте → подтверждение в кабинете → ResumeAsync.
+    Сессия хранится в PostgreSQL и переживает рестарт сервиса.
+</p>
+
+@if (!string.IsNullOrWhiteSpace(error))
+{
+    <div class="alert alert-error">@error</div>
+}
+
+<section class="card">
+    <h2>Новый диалог</h2>
+    <div class="form-grid">
+        <label>
+            Агент
+            <select @bind="selectedAgentId">
+                <option value="">— выберите агента —</option>
+                @foreach (var agent in agents)
+                {
+                    <option value="@agent.Id">@agent.Name (v@agent.CurrentVersion)</option>
+                }
+            </select>
+        </label>
+    </div>
+
+    <label>
+        Сообщение
+        <textarea rows="3" @bind="newMessage"
+                  placeholder="Например: write: отправить счёт клиенту"></textarea>
+    </label>
+    <p class="muted">
+        Демо-модель понимает команды <code>write: &lt;текст&gt;</code> (echo_write через гейт)
+        и <code>read: &lt;текст&gt;</code> (echo_read).
+    </p>
+
+    <button class="primary" @onclick="StartAsync" disabled="@saving">Начать диалог</button>
+</section>
+
+<section class="card">
+    <div class="row between">
+        <h2>Сессии</h2>
+        <button class="ghost" @onclick="ReloadAsync" disabled="@loading">Обновить</button>
+    </div>
+
+    @if (loading)
+    {
+        <p class="muted">Загрузка…</p>
+    }
+    else if (sessions.Count == 0)
+    {
+        <p class="muted">Диалогов пока нет.</p>
+    }
+    else
+    {
+        <table>
+            <thead>
+                <tr><th>Агент</th><th>Статус</th><th>Визитер</th><th>Активность</th><th>Гейт</th><th></th></tr>
+            </thead>
+            <tbody>
+                @foreach (var session in sessions)
+                {
+                    <tr>
+                        <td>@session.AgentName</td>
+                        <td><span class="badge">@session.Status</span></td>
+                        <td>@session.UserRef</td>
+                        <td>@session.LastActivityAt.ToLocalTime().ToString("dd.MM.yyyy HH:mm:ss")</td>
+                        <td>
+                            @if (session.PendingApproval is { } approval)
+                            {
+                                <span class="badge badge-warn">@approval.Tool</span>
+                            }
+                            else
+                            {
+                                <span class="muted">—</span>
+                            }
+                        </td>
+                        <td>
+                            <a class="button-link" href="@($"/dialogs/{session.Id}")">Открыть</a>
+                        </td>
+                    </tr>
+                }
+            </tbody>
+        </table>
+    }
+</section>
+
+@code {
+    private Guid? tenantId;
+    private bool loading = true;
+    private bool saving;
+    private string? error;
+
+    private List<AgentDto> agents = [];
+    private List<DialogSessionDto> sessions = [];
+    private Guid selectedAgentId;
+    private string newMessage = string.Empty;
+
+    protected override async Task OnInitializedAsync()
+    {
+        var state = await AuthState.GetAuthenticationStateAsync();
+        tenantId = CabinetClaims.GetTenantId(state.User);
+
+        if (tenantId is null)
+        {
+            error = "В claim пользователя нет tenant_id: перелогиньтесь.";
+            loading = false;
+            return;
+        }
+
+        await ReloadAsync();
+        loading = false;
+    }
+
+    private async Task ReloadAsync()
+    {
+        if (tenantId is not { } id)
+        {
+            return;
+        }
+
+        try
+        {
+            agents = (await Api.GetAgentsAsync(id)).ToList();
+            sessions = (await Api.GetDialogsAsync(id)).ToList();
+        }
+        catch (CabinetApiException exception)
+        {
+            error = exception.Message;
+        }
+    }
+
+    private async Task StartAsync()
+    {
+        if (tenantId is not { } id)
+        {
+            return;
+        }
+
+        error = null;
+
+        if (selectedAgentId == Guid.Empty)
+        {
+            error = "Выберите агента.";
+            return;
+        }
+
+        if (string.IsNullOrWhiteSpace(newMessage))
+        {
+            error = "Введите сообщение.";
+            return;
+        }
+
+        saving = true;
+
+        try
+        {
+            var dialog = await Api.StartDialogAsync(
+                id,
+                new DialogStartDto(selectedAgentId, newMessage.Trim(), "cabinet"));
+
+            newMessage = string.Empty;
+            Navigation.NavigateTo($"/dialogs/{dialog.SessionId}");
+        }
+        catch (CabinetApiException exception)
+        {
+            error = exception.Message;
+        }
+        finally
+        {
+            saving = false;
+        }
+    }
+}

@@ -2,54 +2,146 @@ using AgentPlatform.Core.Abstractions;
 using AgentPlatform.Core.Contracts;
 using AgentPlatform.Core.Dto;
 using AgentPlatform.Core.Enums;
+using AgentPlatform.Core.Validation;
+using AgentPlatform.Runtime.Orchestration;
+using AgentPlatform.Runtime.Policy;
+using Microsoft.Agents.AI.Workflows;
 
 namespace AgentPlatform.Runtime;
 
 /// <summary>
-/// Заглушка оркестратора на Microsoft.Agents.AI.Workflows (Agent Framework 1.x).
+/// Оркестратор агента на Microsoft.Agents.AI.Workflows (Agent Framework 1.x).
 /// <para>
-/// Реальный граф (LLM-узел → tool-узел → gate-узел → чекпоинт) и resume
-/// реализуются в задачах фазы 2. Контракт <see cref="IOrchestrationRuntime"/>
-/// уже зафиксирован, поэтому замена реализации не затрагивает Gateway.
+/// Граф: DialogExecutor (LLM-ход) → условный переход → ToolExecutor (read) →
+/// DialogExecutor | GateExecutor (write/destructive) | EscalateExecutor → End.
+/// </para>
+/// <para>
+/// Состояние сессии хранится только в нейтральном контракте <see cref="StateContract"/>:
+/// после каждого суперстепа state → checkpoints (не нативные чекпоинты MAF).
+/// ResumeAsync восстанавливает состояние из чекпоинта, продолжает граф с gate-узла
+/// и работает на версии агента, закреплённой за сессией (version pinning).
 /// </para>
 /// </summary>
 public sealed class MafOrchestrationRuntime : IOrchestrationRuntime
 {
     /// <summary>
-    /// Хеш топологии графа. В v1 константа: чекпоинты валидируют resume по этому
-    /// значению, поэтому смена графа обязана менять и подпись.
+    /// Хеш топологии графа. Чекпоинты валидируют resume по этому значению,
+    /// поэтому смена графа обязана менять и подпись.
     /// </summary>
     public const string GraphSignatureHash = "agentplatform.maf.graph.v1";
 
+    private readonly AgentFactory _agentFactory;
+    private readonly ICheckpointStore _checkpointStore;
+    private readonly IToolInvoker _toolInvoker;
+    private readonly PolicyEngine _policyEngine;
+    private readonly AgentRuntimeOptions _options;
+
+    /// <summary>Создаёт оркестратор.</summary>
+    /// <param name="agentFactory">Сборка агента закреплённой версии (AgentFactory).</param>
+    /// <param name="checkpointStore">Хранилище чекпоинтов (нейтральный JSON).</param>
+    /// <param name="toolInvoker">Вызов тулов коннекторов через Connector Host.</param>
+    /// <param name="policyEngine">Серверная проверка политик и HITL-гейтов.</param>
+    /// <param name="options">Настройки Runtime (TTL кеша, таймауты, лимиты).</param>
+    public MafOrchestrationRuntime(
+        AgentFactory agentFactory,
+        ICheckpointStore checkpointStore,
+        IToolInvoker toolInvoker,
+        PolicyEngine policyEngine,
+        AgentRuntimeOptions options)
+    {
+        _agentFactory = agentFactory ?? throw new ArgumentNullException(nameof(agentFactory));
+        _checkpointStore = checkpointStore ?? throw new ArgumentNullException(nameof(checkpointStore));
+        _toolInvoker = toolInvoker ?? throw new ArgumentNullException(nameof(toolInvoker));
+        _policyEngine = policyEngine ?? throw new ArgumentNullException(nameof(policyEngine));
+        _options = options ?? throw new ArgumentNullException(nameof(options));
+    }
+
     /// <inheritdoc />
-    public Task<RunResult> RunAsync(SessionContext session, IncomingMessage msg, CancellationToken ct)
+    public async Task<RunResult> RunAsync(SessionContext session, IncomingMessage msg, CancellationToken ct)
     {
         ArgumentNullException.ThrowIfNull(session);
         ArgumentNullException.ThrowIfNull(msg);
         ct.ThrowIfCancellationRequested();
 
-        // TODO(2.x): собрать Workflow (WorkflowBuilder), выполнить шаг и вернуть чекпоинт.
-        var result = new RunResult(
-            RunOutcome.Completed,
-            Message: $"[runtime stub] получено сообщение: {msg.Text}",
-            GraphSignatureHash: GraphSignatureHash,
-            Superstep: 1);
+        if (msg.TenantId != session.TenantId)
+        {
+            throw new ArgumentException("message.tenant_id must match the session tenant", nameof(msg));
+        }
 
-        return Task.FromResult(result);
+        if (string.IsNullOrWhiteSpace(msg.Text))
+        {
+            throw new ArgumentException("message.text must not be empty", nameof(msg));
+        }
+
+        var checkpoint = await _checkpointStore
+            .GetLatestAsync(session.TenantId, session.SessionId, ct)
+            .ConfigureAwait(false);
+
+        var state = RestoreState(checkpoint);
+
+        if (state.PendingGate is { } pendingGate)
+        {
+            throw new InvalidOperationException(
+                $"Session {session.SessionId} is awaiting a gate decision " +
+                $"(approval {pendingGate.ApprovalId}); use ResumeAsync.");
+        }
+
+        var agent = await _agentFactory.CreateAsync(session, ct).ConfigureAwait(false);
+
+        state = state with
+        {
+            Messages = [.. state.Messages, new StateMessage(MessageRole.User, msg.Text.Trim(), DateTimeOffset.UtcNow)]
+        };
+
+        var run = OrchestrationState.Start(
+            session,
+            agent,
+            state,
+            checkpoint?.Superstep ?? 0,
+            _checkpointStore,
+            _toolInvoker,
+            _policyEngine,
+            _options,
+            GraphSignatureHash);
+
+        await ExecuteAsync(run, new OrchestrationMessage(OrchestrationSignal.LlmTurn), ct).ConfigureAwait(false);
+
+        return BuildResult(run);
     }
 
     /// <inheritdoc />
-    public Task PauseAsync(SessionContext session, GatePayload payload)
+    public async Task PauseAsync(SessionContext session, GatePayload payload)
     {
         ArgumentNullException.ThrowIfNull(session);
         ArgumentNullException.ThrowIfNull(payload);
 
-        // TODO(2.x): остановить граф на gate-узле и сохранить чекпоинт через StateContract.
-        return Task.CompletedTask;
+        GatePayloadValidator.Validate(payload);
+
+        var checkpoint = await _checkpointStore
+            .GetLatestAsync(session.TenantId, session.SessionId, CancellationToken.None)
+            .ConfigureAwait(false)
+            ?? throw new InvalidOperationException(
+                "Session has no checkpoint: a pause at a HITL gate is produced by RunAsync " +
+                "(gate node writes the pending gate and approval id).");
+
+        var state = RestoreState(checkpoint);
+
+        var pending = state.PendingGate
+            ?? throw new InvalidOperationException(
+                "Session is not awaiting a gate: PauseAsync expects a pending gate written by the gate node.");
+
+        if (!string.Equals(pending.Payload.Tool, payload.Tool, StringComparison.Ordinal))
+        {
+            throw new InvalidOperationException(
+                $"Another gate is already pending ({pending.Payload.Tool}); " +
+                $"pause payload for '{payload.Tool}' cannot replace it.");
+        }
+
+        // Пауза уже зафиксирована чекпоинтом gate-узла — операция идемпотентна.
     }
 
     /// <inheritdoc />
-    public Task ResumeAsync(SessionContext session, Decision decision)
+    public async Task ResumeAsync(SessionContext session, Decision decision)
     {
         ArgumentNullException.ThrowIfNull(session);
         ArgumentNullException.ThrowIfNull(decision);
@@ -61,7 +153,104 @@ public sealed class MafOrchestrationRuntime : IOrchestrationRuntime
                 nameof(decision));
         }
 
-        // TODO(2.x): проверить graph_signature_hash чекпоинта и продолжить граф с решением.
-        return Task.CompletedTask;
+        var checkpoint = await _checkpointStore
+            .GetLatestAsync(session.TenantId, session.SessionId, CancellationToken.None)
+            .ConfigureAwait(false)
+            ?? throw new InvalidOperationException(
+                $"Session {session.SessionId} has no checkpoint to resume from.");
+
+        var state = RestoreState(checkpoint);
+
+        if (state.PendingGate is null)
+        {
+            throw new InvalidOperationException(
+                $"Session {session.SessionId} has no pending gate; ResumeAsync requires a paused session.");
+        }
+
+        // Version pinning: агент собирается на версии, с которой начата сессия.
+        var agent = await _agentFactory
+            .CreateAsync(session, CancellationToken.None)
+            .ConfigureAwait(false);
+
+        if (agent.FindTool(state.PendingGate.Payload.Tool) is null)
+        {
+            throw new InvalidOperationException(
+                $"Pending tool '{state.PendingGate.Payload.Tool}' is not available in the pinned " +
+                $"agent version {session.AgentVersion}; resume is rejected.");
+        }
+
+        var run = OrchestrationState.Start(
+            session,
+            agent,
+            state,
+            checkpoint.Superstep,
+            _checkpointStore,
+            _toolInvoker,
+            _policyEngine,
+            _options,
+            GraphSignatureHash);
+
+        await ExecuteAsync(
+                run,
+                new OrchestrationMessage(OrchestrationSignal.GateDecision, Decision: decision),
+                CancellationToken.None)
+            .ConfigureAwait(false);
     }
+
+    private static async Task ExecuteAsync(
+        OrchestrationState run,
+        OrchestrationMessage input,
+        CancellationToken cancellationToken)
+    {
+        var workflow = OrchestrationGraph.Build(run);
+
+        await using var execution = await InProcessExecution
+            .RunAsync(workflow, input, cancellationToken: cancellationToken)
+            .ConfigureAwait(false);
+
+        foreach (var workflowEvent in execution.NewEvents)
+        {
+            if (workflowEvent is WorkflowErrorEvent error)
+            {
+                throw new InvalidOperationException($"Orchestration workflow failed: {error.Data}");
+            }
+
+            if (workflowEvent is ExecutorFailedEvent failed)
+            {
+                throw new InvalidOperationException(
+                    $"Orchestration executor '{failed.ExecutorId}' failed: {failed.Data}");
+            }
+        }
+
+        if (!run.Completed)
+        {
+            throw new InvalidOperationException("Orchestration graph finished without reaching the end node.");
+        }
+    }
+
+    private static SessionState RestoreState(SessionCheckpoint? checkpoint)
+    {
+        if (checkpoint is null)
+        {
+            return new SessionState();
+        }
+
+        if (!string.Equals(checkpoint.GraphSignatureHash, GraphSignatureHash, StringComparison.Ordinal))
+        {
+            throw new InvalidOperationException(
+                $"Checkpoint graph signature '{checkpoint.GraphSignatureHash}' does not match " +
+                $"runtime graph '{GraphSignatureHash}': session cannot be resumed by this runtime.");
+        }
+
+        return StateContract.DeserializeRequired(checkpoint.State);
+    }
+
+    private static RunResult BuildResult(OrchestrationState run) => new(
+        run.Outcome,
+        run.Reply,
+        run.PendingGate,
+        run.ApprovalId,
+        GraphSignatureHash,
+        run.Superstep);
 }
+

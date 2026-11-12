@@ -22,36 +22,8 @@ app.MapGet("/health", () => Results.Ok(new ServiceHealth("ok", "connector-host",
 // Манифест тестового коннектора: демонстрирует контракт ConnectorManifest
 // (name, version, description, auth, tools[] с JSON Schema и политиками,
 // limits, cacheClasses) и проходит его валидацию при старте — как при установке.
-var echoManifest = new ConnectorManifest(
-    Name: "echo",
-    Version: "1.0.0",
-    Description: "Внутренний тестовый коннектор платформы: echo_read (read) и echo_write (write через HITL).",
-    Auth: new ConnectorAuth(ConnectorAuthType.ExternalMcp),
-    Tools:
-    [
-        new ConnectorToolManifest(
-            Name: "echo_read",
-            Description: "Echoes the message back. Read-only test tool.",
-            InputSchema: """{"type":"object","properties":{"message":{"type":"string"}},"required":["message"]}""",
-            Policy: ToolPolicy.Read,
-            CacheClass: "echo-read",
-            CostPerCall: 0m),
-        new ConnectorToolManifest(
-            Name: "echo_write",
-            Description: "Echoes the message back. Write tool, always gated by HITL.",
-            InputSchema: """{"type":"object","properties":{"message":{"type":"string"}},"required":["message"]}""",
-            Policy: ToolPolicy.Write,
-            CostPerCall: 0m)
-    ],
-    Limits: new ConnectorLimits(
-        RequestsPerWindow: 60,
-        WindowSeconds: 60,
-        WeightByEndpoint: new Dictionary<string, double>(StringComparer.Ordinal)
-        {
-            ["echo_read"] = 1,
-            ["echo_write"] = 5
-        }),
-    CacheClasses: new Dictionary<string, int>(StringComparer.Ordinal) { ["echo-read"] = 60 });
+// Тот же манифест используется тестами графа (EchoToolsManifest.Create).
+var echoManifest = EchoToolsManifest.Create();
 
 ConnectorManifestValidator.Validate(echoManifest);
 

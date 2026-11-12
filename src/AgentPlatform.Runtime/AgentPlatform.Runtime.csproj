@@ -2,10 +2,13 @@
 
   <ItemGroup>
     <ProjectReference Include="..\AgentPlatform.Core\AgentPlatform.Core.csproj" />
+    <ProjectReference Include="..\AgentPlatform.LlmGateway\AgentPlatform.LlmGateway.csproj" />
   </ItemGroup>
 
   <ItemGroup>
     <PackageReference Include="Microsoft.Agents.AI.Workflows" Version="1.28.0" />
+    <PackageReference Include="Microsoft.Extensions.AI" Version="10.11.0" />
+    <PackageReference Include="StackExchange.Redis" Version="3.4.31" />
   </ItemGroup>
 
   <PropertyGroup>

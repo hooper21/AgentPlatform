@@ -35,7 +35,9 @@ public static class AgentRuntimeServiceCollectionExtensions
         // Таймаут гейта: 24 ч по умолчанию и переопределение по тенанту (из options).
         services.AddSingleton<ITenantGateTimeoutProvider, AgentRuntimeGateTimeoutProvider>();
 
-        services.AddSingleton<AgentFactory>();
+        // AgentFactory зависит от портов хоста (IAgentConfigStore — EF/DbContext, scoped),
+        // поэтому его lifetime совпадает с lifetime оркестратора.
+        services.AddScoped<AgentFactory>();
         services.AddScoped<IOrchestrationRuntime, MafOrchestrationRuntime>();
 
         return services;

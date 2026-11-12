@@ -1,28 +1,50 @@
 using AgentPlatform.Core.Dto;
 using AgentPlatform.Gateway.Caching;
+using AgentPlatform.Gateway.Composition;
+using AgentPlatform.Gateway.Endpoints;
+using AgentPlatform.Infrastructure.Configuration;
+using AgentPlatform.Infrastructure.DependencyInjection;
+using AgentPlatform.Runtime;
 
 var builder = WebApplication.CreateBuilder(args);
 
-// Redis (кеши, rate-limit) подключается лениво: для healthcheck он не обязателен.
+// Redis: rate-limit тенантов и кеш конфигурации агента (соединение ленивое).
 builder.Services.AddPlatformRedis(builder.Configuration);
+
+// PostgreSQL: сессии, сообщения, чекпоинты, заявки HITL, конфигурации агентов.
+builder.Services.AddPlatformInfrastructure(PlatformInfrastructureOptions.FromEnvironment());
+
+// Порты Runtime: EF-хранилища и Connector Host (TODO 2.2 — MCP-транспорт).
+builder.Services.AddGatewayRuntimePorts();
+
+// Gateway: JWT виджета, rate-limit, сессии, SSE-поток, повторы LLM.
+builder.Services.AddGatewaySessions(builder.Configuration);
+builder.Services.AddGatewayLlmResilience(builder.Configuration);
+
+// Runtime агентов за контрактом IOrchestrationRuntime.
+builder.Services.AddMafAgentRuntime(new AgentRuntimeOptions
+{
+    RedisConnectionString = builder.Configuration["Redis:ConnectionString"]
+});
 
 var app = builder.Build();
 
 app.MapGet("/", () => Results.Ok(new
 {
     service = "gateway",
-    status = "stub",
-    endpoints = new[] { "/health", "/api/v1/sessions/{sessionId}/messages" }
+    status = "ready",
+    endpoints = new[]
+    {
+        "/health",
+        "POST /api/sessions/{tenantKey}/messages",
+        "GET /api/sessions/{sessionId}/stream"
+    }
 }));
 
 app.MapGet("/health", () => Results.Ok(new ServiceHealth("ok", "gateway", DateTimeOffset.UtcNow)));
 
-// TODO(2.x): приём сообщения из канала, проверка подписи/JWT, запуск IOrchestrationRuntime.
-app.MapPost("/api/v1/sessions/{sessionId:guid}/messages", (Guid sessionId, IncomingMessage message) =>
-    Results.Problem(
-        title: "Gateway is a stub in v1",
-        detail: $"Session {sessionId} received a message; orchestration runtime is wired in task 2.x.",
-        statusCode: StatusCodes.Status501NotImplemented));
+app.MapGatewayEndpoints();
 
 app.Run();
+
 

@@ -1,0 +1,15 @@
+# Local configuration: секреты только в переменных окружения / .env (не коммитим)
+.env
+.env.*
+!.env.example
+appsettings.Local.json
+
+# IDE
+.vs/
+.vstudio/
+.idea/
+*.bat
+
+# Logs
+logs/
+*.log

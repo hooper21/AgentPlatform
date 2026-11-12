@@ -34,6 +34,8 @@ public sealed class MafOrchestrationRuntime : IOrchestrationRuntime
     private readonly ICheckpointStore _checkpointStore;
     private readonly IToolInvoker _toolInvoker;
     private readonly PolicyEngine _policyEngine;
+    private readonly IApprovalStore _approvalStore;
+    private readonly ITenantGateTimeoutProvider _gateTimeouts;
     private readonly AgentRuntimeOptions _options;
 
     /// <summary>Создаёт оркестратор.</summary>
@@ -41,18 +43,24 @@ public sealed class MafOrchestrationRuntime : IOrchestrationRuntime
     /// <param name="checkpointStore">Хранилище чекпоинтов (нейтральный JSON).</param>
     /// <param name="toolInvoker">Вызов тулов коннекторов через Connector Host.</param>
     /// <param name="policyEngine">Серверная проверка политик и HITL-гейтов.</param>
+    /// <param name="approvalStore">Заявки approvals (полный жизненный цикл HITL).</param>
+    /// <param name="gateTimeouts">Таймаут ожидания решения по настройке тенанта.</param>
     /// <param name="options">Настройки Runtime (TTL кеша, таймауты, лимиты).</param>
     public MafOrchestrationRuntime(
         AgentFactory agentFactory,
         ICheckpointStore checkpointStore,
         IToolInvoker toolInvoker,
         PolicyEngine policyEngine,
+        IApprovalStore approvalStore,
+        ITenantGateTimeoutProvider gateTimeouts,
         AgentRuntimeOptions options)
     {
         _agentFactory = agentFactory ?? throw new ArgumentNullException(nameof(agentFactory));
         _checkpointStore = checkpointStore ?? throw new ArgumentNullException(nameof(checkpointStore));
         _toolInvoker = toolInvoker ?? throw new ArgumentNullException(nameof(toolInvoker));
         _policyEngine = policyEngine ?? throw new ArgumentNullException(nameof(policyEngine));
+        _approvalStore = approvalStore ?? throw new ArgumentNullException(nameof(approvalStore));
+        _gateTimeouts = gateTimeouts ?? throw new ArgumentNullException(nameof(gateTimeouts));
         _options = options ?? throw new ArgumentNullException(nameof(options));
     }
 
@@ -101,6 +109,8 @@ public sealed class MafOrchestrationRuntime : IOrchestrationRuntime
             _checkpointStore,
             _toolInvoker,
             _policyEngine,
+            _approvalStore,
+            _gateTimeouts,
             _options,
             GraphSignatureHash);
 
@@ -116,6 +126,13 @@ public sealed class MafOrchestrationRuntime : IOrchestrationRuntime
         ArgumentNullException.ThrowIfNull(payload);
 
         GatePayloadValidator.Validate(payload);
+
+        if (payload.SessionId != Guid.Empty && payload.SessionId != session.SessionId)
+        {
+            throw new ArgumentException(
+                "payload.session_id must match the paused session",
+                nameof(payload));
+        }
 
         var checkpoint = await _checkpointStore
             .GetLatestAsync(session.TenantId, session.SessionId, CancellationToken.None)
@@ -137,7 +154,28 @@ public sealed class MafOrchestrationRuntime : IOrchestrationRuntime
                 $"pause payload for '{payload.Tool}' cannot replace it.");
         }
 
-        // Пауза уже зафиксирована чекпоинтом gate-узла — операция идемпотентна.
+        // Пауза и заявка уже созданы gate-узлом — операция идемпотентна. Если заявки
+        // нет (например, чекпоинт старого образца), она восстанавливается здесь.
+        var approval = await _approvalStore
+            .FindAsync(session.TenantId, pending.ApprovalId, CancellationToken.None)
+            .ConfigureAwait(false);
+
+        if (approval is null)
+        {
+            await _approvalStore
+                .CreateAsync(
+                    new ApprovalRequest(
+                        pending.ApprovalId,
+                        session.TenantId,
+                        session.SessionId,
+                        pending.Payload,
+                        ApprovalStatus.Pending,
+                        pending.Payload.CreatedAt,
+                        pending.ExpiresAt
+                            ?? DateTimeOffset.UtcNow + _gateTimeouts.GetGateTimeout(session.TenantId)),
+                    CancellationToken.None)
+                .ConfigureAwait(false);
+        }
     }
 
     /// <inheritdoc />
@@ -161,10 +199,43 @@ public sealed class MafOrchestrationRuntime : IOrchestrationRuntime
 
         var state = RestoreState(checkpoint);
 
-        if (state.PendingGate is null)
+        var pending = state.PendingGate
+            ?? throw new InvalidOperationException(
+                $"Session {session.SessionId} has no pending gate; ResumeAsync requires a paused session.");
+
+        if (session.Status == SessionStatus.Closed)
+        {
+            // Сессию отменили, пока гейт ждал решения: заявка закрывается, тул не исполняется.
+            await _approvalStore
+                .CancelPendingAsync(
+                    session.TenantId,
+                    session.SessionId,
+                    "session closed while awaiting gate",
+                    CancellationToken.None)
+                .ConfigureAwait(false);
+
+            throw new InvalidOperationException(
+                $"Session {session.SessionId} is closed: pending approval {pending.ApprovalId} " +
+                "was superseded and the gated action is not executed.");
+        }
+
+        // Заявка живёт в БД, поэтому resume работает после рестарта сервиса.
+        var approval = await _approvalStore
+            .FindAsync(session.TenantId, pending.ApprovalId, CancellationToken.None)
+            .ConfigureAwait(false)
+            ?? throw new InvalidOperationException(
+                $"Approval {pending.ApprovalId} of session {session.SessionId} is not found.");
+
+        if (approval.SessionId != session.SessionId)
         {
             throw new InvalidOperationException(
-                $"Session {session.SessionId} has no pending gate; ResumeAsync requires a paused session.");
+                $"Approval {approval.Id} belongs to session {approval.SessionId}, not {session.SessionId}.");
+        }
+
+        if (approval.Status != ApprovalStatus.Pending)
+        {
+            throw new InvalidOperationException(
+                $"Approval {approval.Id} is already {approval.Status}; the gate cannot be resumed twice.");
         }
 
         // Version pinning: агент собирается на версии, с которой начата сессия.
@@ -172,10 +243,10 @@ public sealed class MafOrchestrationRuntime : IOrchestrationRuntime
             .CreateAsync(session, CancellationToken.None)
             .ConfigureAwait(false);
 
-        if (agent.FindTool(state.PendingGate.Payload.Tool) is null)
+        if (agent.FindTool(pending.Payload.Tool) is null)
         {
             throw new InvalidOperationException(
-                $"Pending tool '{state.PendingGate.Payload.Tool}' is not available in the pinned " +
+                $"Pending tool '{pending.Payload.Tool}' is not available in the pinned " +
                 $"agent version {session.AgentVersion}; resume is rejected.");
         }
 
@@ -187,6 +258,8 @@ public sealed class MafOrchestrationRuntime : IOrchestrationRuntime
             _checkpointStore,
             _toolInvoker,
             _policyEngine,
+            _approvalStore,
+            _gateTimeouts,
             _options,
             GraphSignatureHash);
 
@@ -251,6 +324,7 @@ public sealed class MafOrchestrationRuntime : IOrchestrationRuntime
         run.PendingGate,
         run.ApprovalId,
         GraphSignatureHash,
-        run.Superstep);
+        run.Superstep,
+        run.GateCardJson);
 }
 

@@ -200,7 +200,9 @@ public sealed class MafOrchestrationResumeTests
         var newGate = new GatePayload(
             EchoToolsManifest.WriteTool,
             new JsonObject { ["message"] = "запись" },
-            "другой гейт");
+            "другой гейт",
+            session.SessionId,
+            DateTimeOffset.UtcNow);
 
         // Чекпоинта ещё нет.
         await Assert.ThrowsAsync<InvalidOperationException>(() => runtime.PauseAsync(session, newGate));
@@ -215,7 +217,9 @@ public sealed class MafOrchestrationResumeTests
                 new GatePayload(
                     EchoToolsManifest.ReadTool,
                     new JsonObject { ["message"] = "чтение" },
-                    "чтение")));
+                    "чтение",
+                    session.SessionId,
+                    DateTimeOffset.UtcNow)));
 
         // Тот же гейт — идемпотентно.
         await runtime.PauseAsync(session, paused.PendingGate!);

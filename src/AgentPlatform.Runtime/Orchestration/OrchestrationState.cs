@@ -20,6 +20,8 @@ internal sealed class OrchestrationState
     private readonly ICheckpointStore _checkpointStore;
     private readonly IToolInvoker _toolInvoker;
     private readonly PolicyEngine _policyEngine;
+    private readonly IApprovalStore _approvalStore;
+    private readonly ITenantGateTimeoutProvider _gateTimeouts;
     private readonly AgentRuntimeOptions _options;
     private readonly string _graphSignatureHash;
     private readonly int _superstepBudget;
@@ -32,6 +34,8 @@ internal sealed class OrchestrationState
         ICheckpointStore checkpointStore,
         IToolInvoker toolInvoker,
         PolicyEngine policyEngine,
+        IApprovalStore approvalStore,
+        ITenantGateTimeoutProvider gateTimeouts,
         AgentRuntimeOptions options,
         string graphSignatureHash)
     {
@@ -42,6 +46,8 @@ internal sealed class OrchestrationState
         _checkpointStore = checkpointStore;
         _toolInvoker = toolInvoker;
         _policyEngine = policyEngine;
+        _approvalStore = approvalStore;
+        _gateTimeouts = gateTimeouts;
         _options = options;
         _graphSignatureHash = graphSignatureHash;
         _superstepBudget = superstep + options.MaxSuperstepsPerTurn;
@@ -75,6 +81,9 @@ internal sealed class OrchestrationState
     /// <summary>Идентификатор заявки approvals.id для ожидающего гейта.</summary>
     public Guid? ApprovalId { get; private set; }
 
+    /// <summary>Карточка подтверждения как JSON (для RunResult.GateCard).</summary>
+    public string? GateCardJson { get; private set; }
+
     /// <summary>true — граф дошёл до End.</summary>
     public bool Completed { get; private set; }
 
@@ -87,6 +96,8 @@ internal sealed class OrchestrationState
         ICheckpointStore checkpointStore,
         IToolInvoker toolInvoker,
         PolicyEngine policyEngine,
+        IApprovalStore approvalStore,
+        ITenantGateTimeoutProvider gateTimeouts,
         AgentRuntimeOptions options,
         string graphSignatureHash)
         => new(
@@ -97,6 +108,8 @@ internal sealed class OrchestrationState
             checkpointStore,
             toolInvoker,
             policyEngine,
+            approvalStore,
+            gateTimeouts,
             options,
             graphSignatureHash);
 
@@ -122,18 +135,71 @@ internal sealed class OrchestrationState
         State = State with { Counters = update(State.Counters) };
     }
 
-    /// <summary>Фиксирует паузу: pending_gate в нейтральном состоянии + итог хода.</summary>
-    public void MarkPaused(GatePayload payload, Guid approvalId)
+    /// <summary>
+    /// Фиксирует паузу у HITL-гейта: создаёт заявку approvals (статус pending) с
+    /// таймаутом тенанта и записывает pending_gate в нейтральное состояние.
+    /// Заявка создаётся до чекпоинта: подтверждение сможет прийти после рестарта.
+    /// </summary>
+    /// <param name="payload">Данные гейта (аргументы маскированы).</param>
+    /// <param name="argumentsJson">Полные аргументы вызова для исполнения после approved.</param>
+    /// <param name="cancellationToken">Отмена операции.</param>
+    public async Task<ApprovalRequest> PauseAtGateAsync(
+        GatePayload payload,
+        string argumentsJson,
+        CancellationToken cancellationToken)
     {
         ArgumentNullException.ThrowIfNull(payload);
 
+        if (payload.SessionId != Session.SessionId)
+        {
+            throw new InvalidOperationException(
+                "gate payload session_id must match the paused session.");
+        }
+
+        var expiresAt = DateTimeOffset.UtcNow + _gateTimeouts.GetGateTimeout(Session.TenantId);
+
+        var approval = await _approvalStore
+            .CreateAsync(
+                new ApprovalRequest(
+                    Guid.NewGuid(),
+                    Session.TenantId,
+                    Session.SessionId,
+                    payload,
+                    ApprovalStatus.Pending,
+                    payload.CreatedAt,
+                    expiresAt),
+                cancellationToken)
+            .ConfigureAwait(false);
+
         PendingGate = payload;
-        ApprovalId = approvalId;
+        ApprovalId = approval.Id;
+        GateCardJson = approval.ToCardJson();
         Outcome = RunOutcome.PausedForGate;
         State = State with
         {
-            PendingGate = new PendingGateState(approvalId, payload, DateTimeOffset.UtcNow + _options.GateExpiry)
+            PendingGate = new PendingGateState(approval.Id, payload, approval.ExpiresAt, argumentsJson)
         };
+
+        return approval;
+    }
+
+    /// <summary>
+    /// Фиксирует терминальное решение по ожидающей заявке (approved | rejected |
+    /// expired | superseded) до исполнения тула: аудит видит решение раньше действия.
+    /// </summary>
+    public async Task<ApprovalRequest> DecideApprovalAsync(
+        Decision decision,
+        CancellationToken cancellationToken)
+    {
+        ArgumentNullException.ThrowIfNull(decision);
+
+        var approvalId = ApprovalId
+            ?? State.PendingGate?.ApprovalId
+            ?? throw new InvalidOperationException("There is no pending approval to decide.");
+
+        return await _approvalStore
+            .DecideAsync(Session.TenantId, approvalId, decision, cancellationToken)
+            .ConfigureAwait(false);
     }
 
     /// <summary>Снимает ожидающий гейт после решения.</summary>
@@ -141,6 +207,7 @@ internal sealed class OrchestrationState
     {
         PendingGate = null;
         ApprovalId = null;
+        GateCardJson = null;
         State = State with { PendingGate = null };
     }
 

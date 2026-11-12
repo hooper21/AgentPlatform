@@ -1,6 +1,8 @@
 using System.Runtime.CompilerServices;
 using AgentPlatform.Core.Abstractions;
 using AgentPlatform.Core.Contracts;
+using AgentPlatform.Core.Dto;
+using AgentPlatform.Core.Enums;
 using AgentPlatform.LlmGateway;
 using Microsoft.Extensions.AI;
 
@@ -151,6 +153,110 @@ internal sealed class InMemoryCheckpointStore : ICheckpointStore
     {
         _checkpoints.Add(checkpoint);
         return Task.CompletedTask;
+    }
+}
+
+/// <summary>
+/// Хранилище заявок approvals в памяти — для проверки DI-регистрации Runtime
+/// и unit-тестов без БД. Повторяет контракт <see cref="IApprovalStore"/>.
+/// </summary>
+internal sealed class InMemoryApprovalStore : IApprovalStore
+{
+    private readonly Dictionary<Guid, ApprovalRequest> _approvals = [];
+
+    public Task<ApprovalRequest> CreateAsync(
+        ApprovalRequest request,
+        CancellationToken cancellationToken = default)
+    {
+        ArgumentNullException.ThrowIfNull(request);
+
+        var stored = request with
+        {
+            Id = request.Id == Guid.Empty ? Guid.NewGuid() : request.Id,
+            RequestedAt = request.RequestedAt == default ? DateTimeOffset.UtcNow : request.RequestedAt
+        };
+
+        _approvals[stored.Id] = stored;
+        return Task.FromResult(stored);
+    }
+
+    public Task<ApprovalRequest?> FindAsync(
+        Guid tenantId,
+        Guid approvalId,
+        CancellationToken cancellationToken = default)
+        => Task.FromResult(
+            _approvals.TryGetValue(approvalId, out var approval) && approval.TenantId == tenantId
+                ? approval
+                : null);
+
+    public Task<ApprovalRequest?> FindPendingAsync(
+        Guid tenantId,
+        Guid sessionId,
+        CancellationToken cancellationToken = default)
+        => Task.FromResult(_approvals.Values
+            .Where(approval => approval.TenantId == tenantId
+                && approval.SessionId == sessionId
+                && approval.Status == ApprovalStatus.Pending)
+            .OrderByDescending(approval => approval.RequestedAt)
+            .FirstOrDefault());
+
+    public Task<ApprovalRequest> DecideAsync(
+        Guid tenantId,
+        Guid approvalId,
+        Decision decision,
+        CancellationToken cancellationToken = default)
+    {
+        var approval = _approvals.TryGetValue(approvalId, out var found) && found.TenantId == tenantId
+            ? found
+            : throw new InvalidOperationException($"Approval {approvalId} is not found for tenant {tenantId}.");
+
+        if (approval.Status != ApprovalStatus.Pending)
+        {
+            throw new InvalidOperationException(
+                $"Approval {approvalId} is already decided (status '{approval.Status}').");
+        }
+
+        var decided = approval with
+        {
+            Status = decision.Status,
+            DecidedBy = decision.DecidedBy,
+            DecidedByKind = decision.DecidedByKind,
+            Comment = decision.Comment,
+            DecidedAt = decision.DecidedAt ?? DateTimeOffset.UtcNow
+        };
+
+        _approvals[approvalId] = decided;
+        return Task.FromResult(decided);
+    }
+
+    public Task<ApprovalRequest?> CancelPendingAsync(
+        Guid tenantId,
+        Guid sessionId,
+        string? comment = null,
+        CancellationToken cancellationToken = default)
+    {
+        var approval = _approvals.Values
+            .Where(candidate => candidate.TenantId == tenantId
+                && candidate.SessionId == sessionId
+                && candidate.Status == ApprovalStatus.Pending)
+            .OrderByDescending(candidate => candidate.RequestedAt)
+            .FirstOrDefault();
+
+        if (approval is null)
+        {
+            return Task.FromResult<ApprovalRequest?>(null);
+        }
+
+        var cancelled = approval with
+        {
+            Status = ApprovalStatus.Superseded,
+            DecidedByKind = ApprovalDecisionKind.System,
+            Comment = comment,
+            DecidedAt = DateTimeOffset.UtcNow
+        };
+
+        _approvals[cancelled.Id] = cancelled;
+        return Task.FromResult<ApprovalRequest?>(cancelled);
     }
 }
 

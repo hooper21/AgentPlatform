@@ -32,6 +32,9 @@ public static class AgentRuntimeServiceCollectionExtensions
         services.AddSingleton<PolicyEngine>();
         services.AddSingleton<IPolicyEngine>(serviceProvider => serviceProvider.GetRequiredService<PolicyEngine>());
 
+        // Таймаут гейта: 24 ч по умолчанию и переопределение по тенанту (из options).
+        services.AddSingleton<ITenantGateTimeoutProvider, AgentRuntimeGateTimeoutProvider>();
+
         services.AddSingleton<AgentFactory>();
         services.AddScoped<IOrchestrationRuntime, MafOrchestrationRuntime>();
 

@@ -81,9 +81,15 @@ public sealed class PersistenceInvariantTests
         database.Context.Approvals.Add(new Approval
         {
             TenantId = TenantId,
-            SessionId = Guid.NewGuid(),
+            SessionId = Guid.Parse("44444444-4444-4444-4444-444444444444"),
             GatePayload = """
-                {"tool":"echo_write","args_masked":{"message":"***"},"human_description":"Отправить сообщение"}
+                {
+                  "tool": "echo_write",
+                  "args_masked": {"message": "***"},
+                  "human_description": "Отправить сообщение",
+                  "session_id": "44444444-4444-4444-4444-444444444444",
+                  "created_at": "2026-01-01T10:00:00+00:00"
+                }
                 """
         });
 

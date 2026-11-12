@@ -19,6 +19,7 @@ public sealed class StateContractTests
     public void State_round_trips_through_neutral_json()
     {
         var approvalId = Guid.NewGuid();
+        var sessionId = Guid.NewGuid();
         var expiresAt = Timestamp.AddHours(24);
         var state = new SessionState
         {
@@ -37,8 +38,11 @@ public sealed class StateContractTests
                     "ms_create_order",
                     new JsonObject { ["amount"] = 50000 },
                     "Создать заказ",
+                    sessionId,
+                    Timestamp,
                     "Отменить в течение часа"),
-                expiresAt),
+                expiresAt,
+                """{"amount":50000}"""),
             Counters = new SessionCounters(
                 Turns: 3,
                 ToolCalls: 1,
@@ -69,7 +73,10 @@ public sealed class StateContractTests
         Assert.Equal("Создать заказ", restored.PendingGate.Payload.HumanDescription);
         Assert.Equal("Отменить в течение часа", restored.PendingGate.Payload.UndoHint);
         Assert.Equal(50000, restored.PendingGate.Payload.ArgsMasked!["amount"]!.GetValue<int>());
+        Assert.Equal(sessionId, restored.PendingGate.Payload.SessionId);
+        Assert.Equal(Timestamp, restored.PendingGate.Payload.CreatedAt);
         Assert.Equal(expiresAt, restored.PendingGate.ExpiresAt);
+        Assert.Equal("""{"amount":50000}""", restored.PendingGate.ArgumentsJson);
 
         Assert.Equal(3, restored.Counters.Turns);
         Assert.Equal(1, restored.Counters.ToolCalls);

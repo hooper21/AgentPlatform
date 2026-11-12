@@ -26,6 +26,7 @@ public sealed class AgentRuntimeRegistrationTests
         services.AddSingleton<IAgentConfigStore>(new FakeAgentConfigStore(EchoAgentConfig.Create()));
         services.AddSingleton<IChatClientFactory>(new SingleChatClientFactory(new ScriptedChatClient()));
         services.AddSingleton<ICheckpointStore>(new InMemoryCheckpointStore());
+        services.AddSingleton<IApprovalStore>(new InMemoryApprovalStore());
         services.AddSingleton<IToolInvoker>(new EchoToolsInvoker());
 
         using var provider = services.BuildServiceProvider();

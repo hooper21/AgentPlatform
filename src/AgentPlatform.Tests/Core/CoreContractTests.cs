@@ -42,7 +42,12 @@ public sealed class CoreContractTests
     [Fact]
     public void Gate_payload_validator_accepts_complete_payload()
     {
-        var payload = new GatePayload("echo_write", new JsonObject { ["message"] = "***" }, "Отправить сообщение");
+        var payload = new GatePayload(
+            "echo_write",
+            new JsonObject { ["message"] = "***" },
+            "Отправить сообщение",
+            Guid.NewGuid(),
+            DateTimeOffset.UtcNow);
 
         GatePayloadValidator.Validate(payload);
         GatePayloadValidator.Validate(payload.ToJson());
@@ -52,6 +57,8 @@ public sealed class CoreContractTests
     [InlineData("""{"args_masked":{},"human_description":"x"}""")]
     [InlineData("""{"tool":"echo_write","human_description":"x"}""")]
     [InlineData("""{"tool":"echo_write","args_masked":{}}""")]
+    [InlineData("""{"tool":"echo_write","args_masked":{},"human_description":"x"}""")]
+    [InlineData("""{"tool":"echo_write","args_masked":{},"human_description":"x","session_id":"11111111-1111-1111-1111-111111111111"}""")]
     [InlineData("""[]""")]
     [InlineData("not-json")]
     public void Gate_payload_validator_rejects_incomplete_payload(string json)

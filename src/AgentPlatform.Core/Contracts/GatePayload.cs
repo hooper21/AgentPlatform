@@ -6,17 +6,23 @@ namespace AgentPlatform.Core.Contracts;
 
 /// <summary>
 /// Полезная нагрузка HITL-гейта. Хранится в approvals.gate_payload (jsonb):
-/// <c>{tool, args_masked, human_description, undo_hint}</c>.
+/// <c>{tool, args_masked, human_description, session_id, created_at, undo_hint}</c>.
+/// Аргументы в payload всегда маскированные: полные аргументы для исполнения
+/// хранятся только в чекпоинте (<see cref="PendingGateState.ArgumentsJson"/>).
 /// Валидация обязательна (см. <see cref="Validation.GatePayloadValidator"/>).
 /// </summary>
 /// <param name="Tool">Имя тула, требующего подтверждения.</param>
 /// <param name="ArgsMasked">Аргументы вызова с замаскированными ПДн.</param>
 /// <param name="HumanDescription">Человекочитаемое описание действия для подтверждающего.</param>
+/// <param name="SessionId">Сессия, в которой возник гейт.</param>
+/// <param name="CreatedAt">Момент создания заявки (UTC).</param>
 /// <param name="UndoHint">Подсказка, как отменить действие.</param>
 public sealed record GatePayload(
     string Tool,
     JsonNode? ArgsMasked,
     string HumanDescription,
+    Guid SessionId,
+    DateTimeOffset CreatedAt,
     string? UndoHint = null)
 {
     /// <summary>Сериализует payload в jsonb-документ (snake_case).</summary>

@@ -30,13 +30,18 @@ public sealed record SessionContext(
 /// <param name="ApprovalId">Идентификатор созданной заявки approvals.id.</param>
 /// <param name="GraphSignatureHash">Хеш топологии графа (валидация resume).</param>
 /// <param name="Superstep">Номер супершага, к которому относится состояние.</param>
+/// <param name="GateCard">
+/// Карточка подтверждения как JSON (snake_case) для каналов/кабинета.
+/// Runtime не рендерит карточку: рендеринг в каналах — фаза 2.
+/// </param>
 public sealed record RunResult(
     RunOutcome Outcome,
     string? Message,
     GatePayload? PendingGate = null,
     Guid? ApprovalId = null,
     string? GraphSignatureHash = null,
-    int Superstep = 0);
+    int Superstep = 0,
+    string? GateCard = null);
 
 /// <summary>Сообщение диалога в терминах платформы.</summary>
 public sealed record ConversationMessage(

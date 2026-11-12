@@ -52,12 +52,18 @@ public sealed record StateToolCall(
 
 /// <summary>Ожидающий подтверждения гейт внутри состояния сессии.</summary>
 /// <param name="ApprovalId">Идентификатор заявки approvals.id.</param>
-/// <param name="Payload">Данные гейта.</param>
+/// <param name="Payload">Данные гейта (аргументы маскированы).</param>
 /// <param name="ExpiresAt">Таймаут ожидания решения.</param>
+/// <param name="ArgumentsJson">
+/// Полные аргументы вызова тула для исполнения после approved. В approvals и в карточку
+/// попадает только <see cref="GatePayload.ArgsMasked"/>, поэтому аргументы для resume
+/// восстанавливаются из чекпоинта.
+/// </param>
 public sealed record PendingGateState(
     Guid ApprovalId,
     GatePayload Payload,
-    DateTimeOffset? ExpiresAt = null);
+    DateTimeOffset? ExpiresAt = null,
+    string? ArgumentsJson = null);
 
 /// <summary>Счётчики сессии (лимиты max_turns / max_tool_calls / max_tokens).</summary>
 public sealed record SessionCounters(

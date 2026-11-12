@@ -84,8 +84,24 @@ internal sealed class RuntimeHarness : IDisposable
             new EfCheckpointStore(database),
             ToolInvoker,
             new PolicyEngine(),
+            new EfApprovalStore(database),
+            new AgentRuntimeGateTimeoutProvider(Options),
             Options);
     }
+
+    /// <summary>Заявка approvals в отдельном DbContext (эмуляция чтения из БД).</summary>
+    public ApprovalRequest? FindApproval(Guid approvalId)
+        => new EfApprovalStore(CreateContext())
+            .FindAsync(Config.TenantId, approvalId)
+            .GetAwaiter()
+            .GetResult();
+
+    /// <summary>Ожидающая заявка сессии (null — сессия не ждёт подтверждения).</summary>
+    public ApprovalRequest? FindPendingApproval(Guid sessionId)
+        => new EfApprovalStore(CreateContext())
+            .FindPendingAsync(Config.TenantId, sessionId)
+            .GetAwaiter()
+            .GetResult();
 
     /// <summary>Контекст сессии с закреплённой версией агента.</summary>
     public SessionContext CreateSession(int agentVersion = EchoAgentConfig.Version)

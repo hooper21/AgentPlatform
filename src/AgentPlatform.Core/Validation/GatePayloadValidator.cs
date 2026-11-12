@@ -1,3 +1,4 @@
+using System.Globalization;
 using System.Text.Json;
 using AgentPlatform.Core.Contracts;
 using AgentPlatform.Core.Json;
@@ -7,7 +8,8 @@ namespace AgentPlatform.Core.Validation;
 /// <summary>
 /// Обязательная (REQUIRED) валидация approvals.gate_payload кодом.
 /// В БД v1 строгая CHECK-схема не ставится — контракт проверяется здесь.
-/// Ожидаемые ключи: tool, args_masked, human_description [, undo_hint].
+/// Ожидаемые ключи: tool, args_masked, human_description, session_id, created_at
+/// [, undo_hint].
 /// </summary>
 public static class GatePayloadValidator
 {
@@ -53,6 +55,8 @@ public static class GatePayloadValidator
 
             RequireNonEmptyString(root, "tool");
             RequireNonEmptyString(root, "human_description");
+            RequireSessionId(root);
+            RequireCreatedAt(root);
 
             if (!root.TryGetProperty("args_masked", out _))
             {
@@ -74,6 +78,31 @@ public static class GatePayloadValidator
             || string.IsNullOrWhiteSpace(value.GetString()))
         {
             throw new JsonValidationException(FieldName, $"'{propertyName}' is required and must be a non-empty string");
+        }
+    }
+
+    private static void RequireSessionId(JsonElement root)
+    {
+        if (!root.TryGetProperty("session_id", out var value)
+            || value.ValueKind != JsonValueKind.String
+            || !Guid.TryParse(value.GetString(), out var sessionId)
+            || sessionId == Guid.Empty)
+        {
+            throw new JsonValidationException(FieldName, "'session_id' is required and must be a non-empty UUID");
+        }
+    }
+
+    private static void RequireCreatedAt(JsonElement root)
+    {
+        if (!root.TryGetProperty("created_at", out var value)
+            || value.ValueKind != JsonValueKind.String
+            || !DateTimeOffset.TryParse(
+                value.GetString(),
+                CultureInfo.InvariantCulture,
+                DateTimeStyles.RoundtripKind,
+                out _))
+        {
+            throw new JsonValidationException(FieldName, "'created_at' is required and must be a timestamp");
         }
     }
 }

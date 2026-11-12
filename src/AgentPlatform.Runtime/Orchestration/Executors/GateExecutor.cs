@@ -1,22 +1,31 @@
+using System.Text.Json.Nodes;
 using AgentPlatform.Core.Contracts;
 using AgentPlatform.Core.Enums;
+using AgentPlatform.Core.Json;
 using Microsoft.Agents.AI.Workflows;
 
 namespace AgentPlatform.Runtime.Orchestration.Executors;
 
 /// <summary>
-/// HITL-гейт. Два входа:
+/// HITL-гейт и полный жизненный цикл заявки approvals. Два входа:
 /// <list type="bullet">
 /// <item><see cref="OrchestrationSignal.GateRequired"/> — вызов write/destructive-тула:
-/// гейт создаёт заявку (approval id) и фиксирует паузу в чекпоинте, граф идёт в End;</item>
+/// гейт создаёт заявку approvals (статус pending) с маскированными аргументами,
+/// фиксирует паузу в чекпоинте и уходит в End. Поток/воркер не удерживаются:
+/// решение может прийти позже, в том числе после рестарта сервиса;</item>
 /// <item><see cref="OrchestrationSignal.GateDecision"/> — resume с решением:
-/// approved исполняет тул, rejected/expired/superseded — нет; в обоих случаях диалог
-/// продолжается LLM-ходом (граф «оживает» с чекпоинта).</item>
+/// approved исполняет тул и возвращает результат модели; rejected/expired/superseded
+/// сообщают модели, что действие не выполнено, и диалог продолжается.</item>
 /// </list>
 /// </summary>
 internal sealed class GateExecutor(OrchestrationState run)
     : Executor<OrchestrationMessage, OrchestrationMessage>("gate")
 {
+    /// <summary>
+    /// Метка системного решения «подтверждение визитера недостаточно для destructive-тула».
+    /// </summary>
+    private const string OperatorRequiredComment = "operator confirmation required";
+
     /// <inheritdoc />
     public override async ValueTask<OrchestrationMessage> HandleAsync(
         OrchestrationMessage message,
@@ -57,14 +66,17 @@ internal sealed class GateExecutor(OrchestrationState run)
             return new OrchestrationMessage(OrchestrationSignal.LlmTurn);
         }
 
-        var approvalId = Guid.NewGuid();
+        // В заявку и карточку попадают только маскированные аргументы; полные аргументы
+        // сохраняются в чекпоинте для исполнения после approved.
+        var argsMasked = PiiMasker.Mask(ToolJson.Parse(argumentsJson)) ?? new JsonObject();
         var payload = new GatePayload(
             tool.ToolName,
-            ToolJson.Parse(argumentsJson),
-            Describe(tool, requirement, argumentsJson),
-            UndoHint: null);
+            argsMasked,
+            Describe(tool, requirement, ToolJson.ToJsonString(argsMasked)),
+            run.Session.SessionId,
+            DateTimeOffset.UtcNow);
 
-        run.MarkPaused(payload, approvalId);
+        await run.PauseAtGateAsync(payload, argumentsJson, cancellationToken).ConfigureAwait(false);
         run.AppendMessage(MessageRole.System, $"Ожидает подтверждения: {payload.HumanDescription}");
         await run.SaveCheckpointAsync(cancellationToken).ConfigureAwait(false);
 
@@ -86,31 +98,38 @@ internal sealed class GateExecutor(OrchestrationState run)
                 $"Pending tool '{pending.Payload.Tool}' is not available in agent version " +
                 $"{run.Agent.Config.Version} (version pinning).");
 
-        var argumentsJson = ToolJson.ToJsonString(pending.Payload.ArgsMasked);
+        // Аргументы для исполнения берутся из чекпоинта: в payload/approvals они маскированы.
+        var argumentsJson = pending.ArgumentsJson
+            ?? ToolJson.ToJsonString(pending.Payload.ArgsMasked);
 
-        if (decision.Status == ApprovalStatus.Approved)
+        var resolved = ResolveDecision(pending, decision);
+
+        if (resolved.Status == ApprovalStatus.Approved)
         {
             var requirement = run.EvaluateGate(tool, argumentsJson);
 
             if (requirement.Kind == GateRequirementKind.OperatorConfirmation
-                && decision.DecidedByKind != ApprovalDecisionKind.Operator)
+                && resolved.DecidedByKind != ApprovalDecisionKind.Operator)
             {
                 // Destructive-тул подтверждает только оператор: подтверждение визитера не даёт прав.
-                run.AppendMessage(
-                    MessageRole.System,
-                    $"Требуется подтверждение оператора для {tool.ToolName}: подтверждение визитера недостаточно.");
-                run.ClearPendingGate();
-                await run.SaveCheckpointAsync(cancellationToken).ConfigureAwait(false);
-
-                return new OrchestrationMessage(OrchestrationSignal.LlmTurn);
+                resolved = new Decision(
+                    ApprovalStatus.Rejected,
+                    ApprovalDecisionKind.System,
+                    Comment: OperatorRequiredComment);
             }
+        }
 
+        // Решение фиксируется в approvals до исполнения тула (аудит раньше действия).
+        await run.DecideApprovalAsync(resolved, cancellationToken).ConfigureAwait(false);
+
+        if (resolved.Status == ApprovalStatus.Approved)
+        {
             await run.InvokeToolAsync(tool, argumentsJson, cancellationToken).ConfigureAwait(false);
             run.ClearPendingGate();
         }
         else
         {
-            run.AppendMessage(MessageRole.System, DescribeRejection(tool.ToolName, decision));
+            run.AppendMessage(MessageRole.System, DescribeRejection(tool.ToolName, resolved));
             run.ClearPendingGate();
         }
 
@@ -120,21 +139,46 @@ internal sealed class GateExecutor(OrchestrationState run)
         return new OrchestrationMessage(OrchestrationSignal.LlmTurn);
     }
 
+    /// <summary>
+    /// Применяет таймаут тенанта: approved/rejected, пришедшие после expires_at,
+    /// трактуются как expired — действие не исполняется, диалог продолжается.
+    /// </summary>
+    private static Decision ResolveDecision(PendingGateState pending, Decision decision)
+    {
+        if (decision.Status is not (ApprovalStatus.Approved or ApprovalStatus.Rejected))
+        {
+            return decision;
+        }
+
+        if (pending.ExpiresAt is { } expiresAt && DateTimeOffset.UtcNow >= expiresAt)
+        {
+            return new Decision(
+                ApprovalStatus.Expired,
+                ApprovalDecisionKind.System,
+                Comment: "gate timeout",
+                DecidedAt: DateTimeOffset.UtcNow);
+        }
+
+        return decision;
+    }
+
     private static string DescribeRejection(string toolName, Decision decision) => decision.Status switch
     {
+        ApprovalStatus.Rejected when decision.Comment == OperatorRequiredComment =>
+            $"Требуется подтверждение оператора для {toolName}: подтверждение визитера недостаточно.",
         ApprovalStatus.Rejected => $"Действие {toolName} отклонено ({decision.DecidedByKind.ToDbValue()}).",
         ApprovalStatus.Expired => $"Подтверждение {toolName} истекло, действие не выполнено.",
         ApprovalStatus.Superseded => $"Запрос подтверждения {toolName} заменён новым, действие не выполнено.",
         _ => $"Действие {toolName} не выполнено."
     };
 
-    private static string Describe(AgentToolConfig tool, GateRequirement requirement, string argumentsJson)
+    private static string Describe(AgentToolConfig tool, GateRequirement requirement, string maskedArgumentsJson)
     {
         var prefix = requirement.Kind == GateRequirementKind.OperatorConfirmation
             ? "Требуется подтверждение оператора"
             : "Требуется подтверждение";
 
-        return $"{prefix}: {tool.ToolName}. Аргументы: {argumentsJson}";
+        return $"{prefix}: {tool.ToolName}. Аргументы: {maskedArgumentsJson}";
     }
 }
 

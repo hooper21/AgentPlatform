@@ -19,8 +19,21 @@ public sealed class AgentRuntimeOptions
     /// </summary>
     public string? RedisConnectionString { get; set; }
 
-    /// <summary>Срок жизни ожидающего HITL-гейта.</summary>
+    /// <summary>
+    /// Срок жизни ожидающего HITL-гейта для тенантов без отдельной настройки.
+    /// По умолчанию 24 часа (требование платформы).
+    /// </summary>
     public TimeSpan GateExpiry { get; set; } = TimeSpan.FromHours(24);
+
+    /// <summary>
+    /// Настройка срока жизни гейта для конкретного тенанта. Переопределяет
+    /// <see cref="GateExpiry"/>; таймаут фиксируется в заявке approvals при паузе.
+    /// </summary>
+    public Dictionary<Guid, TimeSpan> GateExpiryOverrides { get; set; } = [];
+
+    /// <summary>Срок жизни гейта тенанта: override тенанта или значение по умолчанию.</summary>
+    public TimeSpan GetGateExpiry(Guid tenantId)
+        => GateExpiryOverrides.TryGetValue(tenantId, out var timeout) ? timeout : GateExpiry;
 
     /// <summary>
     /// Страховка от зацикливания графа: максимум suперстепов на один RunAsync/ResumeAsync.

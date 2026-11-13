@@ -620,11 +620,23 @@ namespace AgentPlatform.Infrastructure.Persistence.Migrations
                         .HasDefaultValue(0)
                         .HasColumnName("chunk_count");
 
+                    b.Property<string>("Config")
+                        .IsRequired()
+                        .ValueGeneratedOnAdd()
+                        .HasColumnType("jsonb")
+                        .HasColumnName("config")
+                        .HasDefaultValueSql("'{}'::jsonb");
+
                     b.Property<DateTimeOffset>("CreatedAt")
                         .ValueGeneratedOnAdd()
                         .HasColumnType("timestamptz")
                         .HasColumnName("created_at")
                         .HasDefaultValueSql("now()");
+
+                    b.Property<string>("CredentialsRef")
+                        .HasMaxLength(200)
+                        .HasColumnType("character varying(200)")
+                        .HasColumnName("credentials_ref");
 
                     b.Property<string>("IndexMeta")
                         .IsRequired()
@@ -641,11 +653,28 @@ namespace AgentPlatform.Infrastructure.Persistence.Migrations
                         .HasDefaultValue("pending")
                         .HasColumnName("index_status");
 
+                    b.Property<string>("LastCursor")
+                        .HasColumnType("text")
+                        .HasColumnName("last_cursor");
+
+                    b.Property<string>("ProviderType")
+                        .IsRequired()
+                        .ValueGeneratedOnAdd()
+                        .HasMaxLength(50)
+                        .HasColumnType("character varying(50)")
+                        .HasDefaultValue("legacy")
+                        .HasColumnName("provider_type");
+
                     b.Property<string>("Ref")
                         .IsRequired()
                         .HasMaxLength(500)
                         .HasColumnType("character varying(500)")
                         .HasColumnName("ref");
+
+                    b.Property<string>("SyncSchedule")
+                        .HasMaxLength(100)
+                        .HasColumnType("character varying(100)")
+                        .HasColumnName("sync_schedule");
 
                     b.Property<Guid>("TenantId")
                         .HasColumnType("uuid")
@@ -674,6 +703,9 @@ namespace AgentPlatform.Infrastructure.Persistence.Migrations
 
                     b.HasIndex("TenantId")
                         .HasDatabaseName("ix_ks_tenant");
+
+                    b.HasIndex("TenantId", "ProviderType")
+                        .HasDatabaseName("ix_ks_tenant_provider");
 
                     b.ToTable("knowledge_sources", (string)null);
                 });

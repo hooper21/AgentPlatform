@@ -36,9 +36,12 @@ public static class KnowledgeServiceCollectionExtensions
         services.AddScoped<IKnowledgeEmbedder, TenantChatClientEmbedder>();
 
         // Инжест-провайдеры: document | site | faq — реализации контракта Core.
-        services.AddSingleton<IKnowledgeProvider, DocumentKnowledgeProvider>();
-        services.AddSingleton<IKnowledgeProvider, SiteKnowledgeProvider>();
-        services.AddSingleton<IKnowledgeProvider, FaqKnowledgeProvider>();
+        // Новый тип источника добавляется регистрацией IKnowledgeProvider, без
+        // изменения пайплайна и API.
+        services.AddSingleton<IKnowledgeProvider, DocumentProvider>();
+        services.AddSingleton<IKnowledgeProvider, SiteProvider>();
+        services.AddSingleton<IKnowledgeProvider, FaqProvider>();
+        services.AddSingleton<KnowledgeProviderRegistry>();
 
         if (options.UseInMemoryVectorStore)
         {
@@ -58,7 +61,7 @@ public static class KnowledgeServiceCollectionExtensions
         services.AddScoped<KnowledgeIngestService>();
         services.AddScoped<KnowledgeSearchService>();
 
-        services.AddHttpClient(SiteKnowledgeProvider.HttpClientName, client =>
+        services.AddHttpClient(SiteProvider.HttpClientName, client =>
         {
             // Таймаут запроса 5 с (плюс запас на чтение тела); реальный дедлайн
             // на каждый вызов задаётся CancellationTokenSource в провайдере.

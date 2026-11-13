@@ -98,6 +98,80 @@ public sealed class PgVectorKnowledgeVectorStore(AgentPlatformDbContext context)
                 cancellationToken)
             .ConfigureAwait(false);
 
+        await InsertChunksAsync(source, chunks, cancellationToken).ConfigureAwait(false);
+        await transaction.CommitAsync(cancellationToken).ConfigureAwait(false);
+    }
+
+    /// <inheritdoc />
+    public async Task ReplacePageChunksAsync(
+        KnowledgeSourceRef source,
+        string externalId,
+        IReadOnlyList<KnowledgeChunkEmbedding> chunks,
+        CancellationToken cancellationToken = default)
+    {
+        ArgumentNullException.ThrowIfNull(source);
+        ArgumentException.ThrowIfNullOrWhiteSpace(externalId);
+        ArgumentNullException.ThrowIfNull(chunks);
+
+        await using var transaction = await _context.Database
+            .BeginTransactionAsync(cancellationToken)
+            .ConfigureAwait(false);
+
+        await _context.Database
+            .ExecuteSqlRawAsync(
+                """
+                DELETE FROM knowledge_chunks
+                WHERE tenant_id = {0}
+                  AND source_id = {1}
+                  AND metadata->>'external_id' = {2};
+                """,
+                [source.TenantId, source.SourceId, externalId],
+                cancellationToken)
+            .ConfigureAwait(false);
+
+        await InsertChunksAsync(source, chunks, cancellationToken).ConfigureAwait(false);
+        await transaction.CommitAsync(cancellationToken).ConfigureAwait(false);
+    }
+
+    /// <inheritdoc />
+    public async Task DeletePageChunksAsync(
+        Guid tenantId,
+        Guid sourceId,
+        string externalId,
+        CancellationToken cancellationToken = default)
+    {
+        ArgumentException.ThrowIfNullOrWhiteSpace(externalId);
+
+        await _context.Database
+            .ExecuteSqlRawAsync(
+                """
+                DELETE FROM knowledge_chunks
+                WHERE tenant_id = {0}
+                  AND source_id = {1}
+                  AND metadata->>'external_id' = {2};
+                """,
+                [tenantId, sourceId, externalId],
+                cancellationToken)
+            .ConfigureAwait(false);
+    }
+
+    /// <inheritdoc />
+    public async Task DeleteSourceChunksAsync(
+        Guid tenantId,
+        Guid sourceId,
+        CancellationToken cancellationToken = default)
+        => await _context.Database
+            .ExecuteSqlRawAsync(
+                "DELETE FROM knowledge_chunks WHERE tenant_id = {0} AND source_id = {1};",
+                [tenantId, sourceId],
+                cancellationToken)
+            .ConfigureAwait(false);
+
+    private async Task InsertChunksAsync(
+        KnowledgeSourceRef source,
+        IReadOnlyList<KnowledgeChunkEmbedding> chunks,
+        CancellationToken cancellationToken)
+    {
         foreach (var chunk in chunks)
         {
             ArgumentNullException.ThrowIfNull(chunk);
@@ -119,21 +193,7 @@ public sealed class PgVectorKnowledgeVectorStore(AgentPlatformDbContext context)
                     cancellationToken)
                 .ConfigureAwait(false);
         }
-
-        await transaction.CommitAsync(cancellationToken).ConfigureAwait(false);
     }
-
-    /// <inheritdoc />
-    public async Task DeleteSourceChunksAsync(
-        Guid tenantId,
-        Guid sourceId,
-        CancellationToken cancellationToken = default)
-        => await _context.Database
-            .ExecuteSqlRawAsync(
-                "DELETE FROM knowledge_chunks WHERE tenant_id = {0} AND source_id = {1};",
-                [tenantId, sourceId],
-                cancellationToken)
-            .ConfigureAwait(false);
 
     /// <inheritdoc />
     public async Task<IReadOnlyList<KnowledgeHit>> SearchAsync(

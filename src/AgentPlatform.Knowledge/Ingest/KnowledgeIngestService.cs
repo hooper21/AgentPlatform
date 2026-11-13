@@ -1,5 +1,5 @@
-using System.Diagnostics;
 using AgentPlatform.Core.Abstractions;
+using AgentPlatform.Core.Dto;
 using AgentPlatform.Core.Enums;
 using AgentPlatform.Core.Json;
 using AgentPlatform.Core.Scheduling;
@@ -14,15 +14,22 @@ using Microsoft.Extensions.Logging;
 namespace AgentPlatform.Knowledge.Ingest;
 
 /// <summary>
-/// Инжест знаний: создание источника → pending → indexing → ready | error.
-/// Ошибки пишутся в index_meta, источник не удаляется; переиндексация ручная
-/// (<see cref="ReindexAsync"/>) или по расписанию (ReindexCron в index_meta).
-/// Все операции — через TenantScopedRepository (tenant_id из ITenantContext).
+/// Универсальный инжест знаний: источник → провайдер (IKnowledgeProvider) →
+/// чанки → эмбеддинги → pgvector. Пайплайн не знает типов источников: маршрутизация
+/// идёт через <see cref="KnowledgeProviderRegistry"/>, а схема страницы и курсора
+/// описана контрактом Core.
+/// <para>
+/// Полная синхронизация заменяет все чанки источника. Инкрементальная — применяет
+/// изменения постранично: isDeleted=true удаляет чанки страницы по external_id,
+/// изменённая страница заменяет только свои чанки. Ошибки пишутся в index_meta,
+/// источник не удаляется. Все операции — через TenantScopedRepository
+/// (tenant_id из ITenantContext).
+/// </para>
 /// </summary>
 public sealed class KnowledgeIngestService(
     ITenantContext tenantContext,
     ITenantScopedRepository<KnowledgeSource> sources,
-    IEnumerable<IKnowledgeProvider> providers,
+    KnowledgeProviderRegistry providers,
     IKnowledgeEmbedder embedder,
     IKnowledgeVectorStore vectorStore,
     KnowledgeOptions options,
@@ -35,8 +42,8 @@ public sealed class KnowledgeIngestService(
     private readonly ITenantScopedRepository<KnowledgeSource> _sources =
         sources ?? throw new ArgumentNullException(nameof(sources));
 
-    private readonly IReadOnlyList<IKnowledgeProvider> _providers =
-        (providers ?? throw new ArgumentNullException(nameof(providers))).ToList();
+    private readonly KnowledgeProviderRegistry _providers =
+        providers ?? throw new ArgumentNullException(nameof(providers));
 
     private readonly IKnowledgeEmbedder _embedder = embedder ?? throw new ArgumentNullException(nameof(embedder));
 
@@ -52,7 +59,7 @@ public sealed class KnowledgeIngestService(
         logger ?? throw new ArgumentNullException(nameof(logger));
 
     /// <summary>
-    /// Создаёт источник и сразу запускает индексацию (MVP: inline; очередь
+    /// Создаёт источник и сразу запускает полную индексацию (MVP: inline; очередь
     /// фоновой индексации — отдельная задача). Ошибка инжеста не бросается:
     /// статус error и текст ошибки остаются в index_meta.
     /// </summary>
@@ -62,37 +69,47 @@ public sealed class KnowledgeIngestService(
     {
         ArgumentNullException.ThrowIfNull(request);
 
-        var type = ParseType(request.Type);
+        var info = ResolveProviderInfo(request.Type);
         var title = RequireTitle(request.Title);
-        var (reference, content) = ValidateReference(type, request.Ref, request.Content);
-        var reindexCron = ValidateCron(request.ReindexCron);
+        var (location, content) = ValidateConnection(info, request.Ref, request.Content);
+        var schedule = ValidateCron(request.SyncSchedule ?? request.ReindexCron);
+        var config = new KnowledgeProviderConfig(
+            Title: title,
+            Location: location,
+            Content: content,
+            CredentialsRef: Normalize(request.CredentialsRef),
+            Parameters: NormalizeParameters(request.Config));
 
         _tenantContext.RequireTenantId();
 
         var meta = new KnowledgeIndexMeta
         {
-            ReindexCron = reindexCron,
+            ReindexCron = schedule,
             ManualContent = content
         };
 
         var source = new KnowledgeSource
         {
-            Type = type.ToDbValue(),
-            Ref = reference,
+            Type = info.ProviderType,
+            ProviderType = info.ProviderType,
+            Ref = location ?? string.Empty,
+            Config = KnowledgeProviderConfigJson.ToJson(config),
+            CredentialsRef = config.CredentialsRef,
             Title = title,
             ChunkCount = 0,
             IndexStatus = KnowledgeIndexStatus.Pending.ToDbValue(),
+            SyncSchedule = schedule,
             IndexMeta = meta.ToJson()
         };
 
         await _sources.AddAsync(source, cancellationToken).ConfigureAwait(false);
         await _sources.SaveChangesAsync(cancellationToken).ConfigureAwait(false);
 
-        await IndexAsync(source, content, cancellationToken).ConfigureAwait(false);
+        await IndexAsync(source, meta, IndexMode.Full, cancellationToken).ConfigureAwait(false);
         return source;
     }
 
-    /// <summary>Ручная переиндексация источника текущего тенанта (null — не найден).</summary>
+    /// <summary>Полная переиндексация источника текущего тенанта (null — не найден).</summary>
     public async Task<KnowledgeSource?> ReindexAsync(
         Guid sourceId,
         CancellationToken cancellationToken = default)
@@ -104,22 +121,74 @@ public sealed class KnowledgeIngestService(
         }
 
         var meta = KnowledgeIndexMeta.Parse(source.IndexMeta);
-        await IndexAsync(source, meta.ManualContent, cancellationToken).ConfigureAwait(false);
+        await IndexAsync(source, meta, IndexMode.Full, cancellationToken).ConfigureAwait(false);
         return source;
     }
 
     /// <summary>
-    /// Прогон инжеста: провайдер → чанки → эмбеддинги → замена чанков в хранилище.
+    /// Инкрементальная синхронизация источника текущего тенанта (null — не найден).
+    /// Курсор берётся из knowledge_sources.last_cursor; пустой поток изменений
+    /// оставляет курсор прежним.
+    /// </summary>
+    public async Task<KnowledgeSource?> SyncIncrementalAsync(
+        Guid sourceId,
+        CancellationToken cancellationToken = default)
+    {
+        var source = await _sources.FindAsync(sourceId, cancellationToken).ConfigureAwait(false);
+        if (source is null)
+        {
+            return null;
+        }
+
+        var meta = KnowledgeIndexMeta.Parse(source.IndexMeta);
+        await IndexAsync(source, meta, IndexMode.Incremental, cancellationToken).ConfigureAwait(false);
+        return source;
+    }
+
+    /// <summary>
+    /// Синхронизация по расписанию/вебхуку: инкремент, если провайдер его
+    /// поддерживает и курсор уже есть; иначе — полная переиндексация.
+    /// </summary>
+    public async Task<KnowledgeSource?> SyncAsync(
+        Guid sourceId,
+        CancellationToken cancellationToken = default)
+    {
+        var source = await _sources.FindAsync(sourceId, cancellationToken).ConfigureAwait(false);
+        if (source is null)
+        {
+            return null;
+        }
+
+        var meta = KnowledgeIndexMeta.Parse(source.IndexMeta);
+        var info = _providers.Resolve(source).GetSourceInfo();
+        var mode = info.SupportsIncremental && !string.IsNullOrWhiteSpace(source.LastCursor)
+            ? IndexMode.Incremental
+            : IndexMode.Full;
+
+        await IndexAsync(source, meta, mode, cancellationToken).ConfigureAwait(false);
+        return source;
+    }
+
+    private enum IndexMode
+    {
+        Full = 0,
+        Incremental = 1
+    }
+
+    /// <summary>
+    /// Прогон синхронизации: провайдер → чанки → эмбеддинги → хранилище.
     /// Любая ошибка (кроме отмены) фиксируется в index_meta; исключение не пробрасывается.
     /// </summary>
     private async Task IndexAsync(
         KnowledgeSource source,
-        string? manualContent,
+        KnowledgeIndexMeta meta,
+        IndexMode mode,
         CancellationToken cancellationToken)
     {
         var tenantId = _tenantContext.RequireTenantId();
-        var type = EnumTokens.ParseDbValue<KnowledgeSourceType>(source.Type);
-        var meta = KnowledgeIndexMeta.Parse(source.IndexMeta);
+        var provider = _providers.Resolve(source);
+        var info = provider.GetSourceInfo();
+        var config = KnowledgeProviderConfigJson.FromSource(source, meta);
         var started = _timeProvider.GetTimestamp();
         var startedAt = _timeProvider.GetUtcNow();
 
@@ -143,84 +212,36 @@ public sealed class KnowledgeIngestService(
                 expectedDimensions,
                 "knowledge_chunks.embedding");
 
-            var provider = _providers.FirstOrDefault(candidate => candidate.SourceType == type)
-                ?? throw new InvalidOperationException(
-                    $"Провайдер знаний для типа '{source.Type}' не зарегистрирован.");
+            var effectiveMode = mode == IndexMode.Incremental && !info.SupportsIncremental
+                ? IndexMode.Full
+                : mode;
 
-            var request = new KnowledgeProviderRequest(
-                source.Title,
-                string.IsNullOrWhiteSpace(source.Ref) ? null : source.Ref,
-                manualContent ?? meta.ManualContent,
-                meta.Cursor);
+            var chunkCount = effectiveMode == IndexMode.Full
+                ? await RunFullAsync(tenantId, source, provider, config, cancellationToken).ConfigureAwait(false)
+                : await RunIncrementalAsync(tenantId, source, provider, config, cancellationToken)
+                    .ConfigureAwait(false);
 
-            var chunks = new List<KnowledgeChunkEmbedding>();
-            var cursor = meta.Cursor;
-
-            await foreach (var page in provider.ReadAsync(request, cancellationToken).ConfigureAwait(false))
-            {
-                cursor = page.Cursor ?? cursor;
-
-                var drafts = TokenChunker.Split(
-                    page.Content,
-                    page.Heading,
-                    _options.ChunkSizeTokens,
-                    _options.ChunkOverlapTokens);
-
-                foreach (var draft in drafts)
-                {
-                    var embedding = await _embedder
-                        .EmbedAsync(tenantId, draft.Content, cancellationToken)
-                        .ConfigureAwait(false);
-
-                    EnsureEmbeddingDimensions(
-                        embedding.Length,
-                        expectedDimensions,
-                        "knowledge_chunks.embedding");
-
-                    chunks.Add(new KnowledgeChunkEmbedding(
-                        draft.Content,
-                        PlatformJson.SerializeDb(new KnowledgeChunkMetadata(
-                            source.Title,
-                            source.Type,
-                            draft.Heading,
-                            chunks.Count,
-                            draft.TokenCount,
-                            page.Cursor)),
-                        embedding.ToArray()));
-                }
-            }
-
-            if (chunks.Count == 0)
-            {
-                throw new InvalidOperationException(
-                    "Источник не дал ни одного чанка: проверьте контент/доступность документа.");
-            }
-
-            await _vectorStore
-                .ReplaceSourceChunksAsync(
-                    new KnowledgeSourceRef(tenantId, source.Id, source.Title, source.Type),
-                    chunks,
-                    cancellationToken)
-                .ConfigureAwait(false);
-
-            source.ChunkCount = chunks.Count;
+            source.ChunkCount = chunkCount;
             source.IndexStatus = KnowledgeIndexStatus.Ready.ToDbValue();
 
-            meta.Cursor = cursor;
-            meta.ManualContent = manualContent ?? meta.ManualContent;
+            meta.Cursor = source.LastCursor;
+            meta.ManualContent = config.Content ?? meta.ManualContent;
             meta.LastIndexedAt = _timeProvider.GetUtcNow();
             meta.AttemptedAt = startedAt;
             meta.DurationMs = (long)_timeProvider.GetElapsedTime(started).TotalMilliseconds;
-            meta.Chunks = chunks.Count;
+            meta.Chunks = chunkCount;
             meta.Dimensions = expectedDimensions;
             meta.Error = null;
             meta.ErrorType = null;
 
             _logger.LogInformation(
-                "Knowledge source {SourceId} ({Type}) indexed: {Chunks} chunks",
+                "Knowledge source {SourceId} ({Type}/{Provider}) {Mode} sync: {Chunks} chunks, cursor {Cursor}",
                 source.Id,
                 source.Type,
-                chunks.Count);
+                info.ProviderType,
+                effectiveMode,
+                chunkCount,
+                source.LastCursor);
         }
         catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
         {
@@ -245,9 +266,11 @@ public sealed class KnowledgeIngestService(
 
             _logger.LogWarning(
                 exception,
-                "Knowledge source {SourceId} ({Type}) indexing failed: {Error}",
+                "Knowledge source {SourceId} ({Type}/{Provider}) {Mode} sync failed: {Error}",
                 source.Id,
                 source.Type,
+                info.ProviderType,
+                mode,
                 exception.Message);
         }
         finally
@@ -256,6 +279,177 @@ public sealed class KnowledgeIngestService(
             _sources.Update(source);
             await _sources.SaveChangesAsync(CancellationToken.None).ConfigureAwait(false);
         }
+    }
+
+
+
+    private async Task<int> RunFullAsync(
+        Guid tenantId,
+        KnowledgeSource source,
+        IKnowledgeProvider provider,
+        KnowledgeProviderConfig config,
+        CancellationToken cancellationToken)
+    {
+        var chunks = new List<KnowledgeChunkEmbedding>();
+        var cursor = source.LastCursor;
+        var position = 0;
+
+        await foreach (var page in provider.FetchAll(config, since: null, cancellationToken).ConfigureAwait(false))
+        {
+            // Tombstone в полной выдаче не индексируется: полная замена и так
+            // удаляет чанки, которых нет в источнике.
+            if (page.IsDeleted)
+            {
+                continue;
+            }
+
+            var pageChunks = await BuildChunksAsync(
+                tenantId,
+                source,
+                page,
+                page.Cursor,
+                position,
+                cancellationToken).ConfigureAwait(false);
+
+            chunks.AddRange(pageChunks);
+            position += pageChunks.Count;
+            cursor = page.Cursor ?? cursor;
+        }
+
+        if (chunks.Count == 0)
+        {
+            throw new InvalidOperationException(
+                "Источник не дал ни одного чанка: проверьте контент/доступность документа.");
+        }
+
+        await _vectorStore
+            .ReplaceSourceChunksAsync(
+                new KnowledgeSourceRef(tenantId, source.Id, source.Title, source.Type),
+                chunks,
+                cancellationToken)
+            .ConfigureAwait(false);
+
+        source.LastCursor = cursor;
+        return chunks.Count;
+    }
+
+    private async Task<int> RunIncrementalAsync(
+        Guid tenantId,
+        KnowledgeSource source,
+        IKnowledgeProvider provider,
+        KnowledgeProviderConfig config,
+        CancellationToken cancellationToken)
+    {
+        var sourceRef = new KnowledgeSourceRef(tenantId, source.Id, source.Title, source.Type);
+        var cursor = source.LastCursor;
+        var changed = 0;
+        var deleted = 0;
+
+        await foreach (var change in provider
+            .FetchIncremental(config, cursor, cancellationToken)
+            .ConfigureAwait(false))
+        {
+            var page = change.Page;
+            cursor = change.Cursor ?? page.Cursor ?? cursor;
+
+            if (page.IsDeleted)
+            {
+                await _vectorStore
+                    .DeletePageChunksAsync(tenantId, source.Id, page.ExternalId, cancellationToken)
+                    .ConfigureAwait(false);
+                deleted++;
+                continue;
+            }
+
+            var chunks = await BuildChunksAsync(
+                tenantId,
+                source,
+                page,
+                change.Cursor ?? page.Cursor,
+                positionOffset: 0,
+                cancellationToken).ConfigureAwait(false);
+
+            if (chunks.Count == 0)
+            {
+                // Страница стала пустой — прежние чанки удаляем, чтобы поиск не
+                // возвращал устаревший контент.
+                await _vectorStore
+                    .DeletePageChunksAsync(tenantId, source.Id, page.ExternalId, cancellationToken)
+                    .ConfigureAwait(false);
+                deleted++;
+                continue;
+            }
+
+            await _vectorStore
+                .ReplacePageChunksAsync(sourceRef, page.ExternalId, chunks, cancellationToken)
+                .ConfigureAwait(false);
+            changed++;
+        }
+
+        source.LastCursor = cursor;
+
+        _logger.LogInformation(
+            "Knowledge source {SourceId} incremental: {Changed} pages changed, {Deleted} deleted",
+            source.Id,
+            changed,
+            deleted);
+
+        return await CountExistingChunksAsync(tenantId, source.Id, cancellationToken).ConfigureAwait(false);
+    }
+
+
+    private async Task<IReadOnlyList<KnowledgeChunkEmbedding>> BuildChunksAsync(
+        Guid tenantId,
+        KnowledgeSource source,
+        KnowledgePage page,
+        string? cursor,
+        int positionOffset,
+        CancellationToken cancellationToken)
+    {
+        var drafts = TokenChunker.Split(
+            page.Content,
+            page.Heading,
+            _options.ChunkSizeTokens,
+            _options.ChunkOverlapTokens);
+
+        if (drafts.Count == 0)
+        {
+            return [];
+        }
+
+        var chunks = new List<KnowledgeChunkEmbedding>(drafts.Count);
+        var pageMetadata = page.PageMetadata;
+
+        foreach (var draft in drafts)
+        {
+            cancellationToken.ThrowIfCancellationRequested();
+
+            var embedding = await _embedder
+                .EmbedAsync(tenantId, draft.Content, cancellationToken)
+                .ConfigureAwait(false);
+
+            var metadata = new KnowledgeChunkMetadata(
+                source.Title,
+                source.Type,
+                draft.Heading,
+                positionOffset + draft.Position,
+                draft.TokenCount,
+                cursor,
+                page.ExternalId,
+                pageMetadata.Url,
+                pageMetadata.ModifiedAt,
+                pageMetadata.Author,
+                pageMetadata.Space,
+                pageMetadata.Folder);
+
+            chunks.Add(new KnowledgeChunkEmbedding(
+                draft.Content,
+                metadata.ToJson(),
+                embedding.ToArray(),
+                page.ExternalId));
+        }
+
+        return chunks;
     }
 
     private static void EnsureEmbeddingDimensions(int? actual, int? expected, string? origin = null)
@@ -268,7 +462,7 @@ public sealed class KnowledgeIngestService(
         var target = origin is null ? "knowledge_chunks.embedding" : origin;
         throw new EmbeddingDimensionMismatchException(
             $"Размерность эмбеддинга {actual.Value} не совпадает с {target} vector({expected.Value}). " +
-            $"Индексирование остановлено: векторы не обрезаются и не дополняются " +
+            "Индексирование остановлено: векторы не обрезаются и не дополняются " +
             $"(модель '{KnowledgeOptions.SectionName}:EmbeddingModel').",
             actual.Value,
             expected.Value);
@@ -292,16 +486,54 @@ public sealed class KnowledgeIngestService(
         }
     }
 
-    private static KnowledgeSourceType ParseType(string? token)
+    private KnowledgeProviderInfo ResolveProviderInfo(string? providerType)
     {
-        if (!EnumTokens.TryParseDbValue<KnowledgeSourceType>(token, out var type))
+        var provider = _providers.Resolve(providerType);
+        return provider.GetSourceInfo();
+    }
+
+    private static (string? Location, string? Content) ValidateConnection(
+        KnowledgeProviderInfo info,
+        string? reference,
+        string? content)
+    {
+        var locationRequired = info.Parameters.Any(parameter =>
+            parameter.Required
+            && string.Equals(parameter.Name, KnowledgeProviderParameterNames.Location, StringComparison.OrdinalIgnoreCase));
+
+        var contentRequired = info.Parameters.Any(parameter =>
+            parameter.Required
+            && string.Equals(parameter.Name, KnowledgeProviderParameterNames.Content, StringComparison.OrdinalIgnoreCase));
+
+        string? location = null;
+        if (!string.IsNullOrWhiteSpace(reference))
+        {
+            location = reference.Trim();
+            if (location.Length > 500)
+            {
+                throw new ArgumentException("ref must be at most 500 characters.", nameof(reference));
+            }
+        }
+        else if (locationRequired)
         {
             throw new ArgumentException(
-                $"type must be one of document | site | faq, got '{token}'.",
-                nameof(token));
+                $"ref is required for a knowledge source of type '{info.ProviderType}'.",
+                nameof(reference));
         }
 
-        return type;
+        string? value = null;
+        if (!string.IsNullOrWhiteSpace(content))
+        {
+            value = content.Trim();
+        }
+        else if (contentRequired)
+        {
+            throw new ArgumentException(
+                $"Для источника type={info.ProviderType} обязателен content в теле запроса.",
+                nameof(content));
+        }
+
+        return (location, value);
     }
 
     private static string RequireTitle(string? title)
@@ -320,40 +552,6 @@ public sealed class KnowledgeIngestService(
         return value;
     }
 
-    private static (string Reference, string? Content) ValidateReference(
-        KnowledgeSourceType type,
-        string? reference,
-        string? content)
-    {
-        if (type == KnowledgeSourceType.Faq)
-        {
-            if (string.IsNullOrWhiteSpace(content))
-            {
-                throw new ArgumentException(
-                    "Для источника type=faq обязателен content в теле запроса.",
-                    nameof(content));
-            }
-
-            // DDL фазы 1: ref NOT NULL, поэтому для faq хранится пустая строка (API отдаёт null).
-            return (string.Empty, content.Trim());
-        }
-
-        if (string.IsNullOrWhiteSpace(reference))
-        {
-            throw new ArgumentException(
-                $"ref is required for a knowledge source of type '{type.ToDbValue()}'.",
-                nameof(reference));
-        }
-
-        var value = reference.Trim();
-        if (value.Length > 500)
-        {
-            throw new ArgumentException("ref must be at most 500 characters.", nameof(reference));
-        }
-
-        return (value, content);
-    }
-
     private static string? ValidateCron(string? cron)
     {
         if (string.IsNullOrWhiteSpace(cron))
@@ -368,4 +566,30 @@ public sealed class KnowledgeIngestService(
 
         return cron.Trim();
     }
+
+    private static IReadOnlyDictionary<string, string?>? NormalizeParameters(
+        IReadOnlyDictionary<string, string?>? parameters)
+    {
+        if (parameters is null || parameters.Count == 0)
+        {
+            return null;
+        }
+
+        var normalized = new Dictionary<string, string?>(StringComparer.OrdinalIgnoreCase);
+        foreach (var pair in parameters)
+        {
+            if (string.IsNullOrWhiteSpace(pair.Key))
+            {
+                continue;
+            }
+
+            normalized[pair.Key.Trim()] = Normalize(pair.Value);
+        }
+
+        return normalized.Count == 0 ? null : normalized;
+    }
+
+    private static string? Normalize(string? value)
+        => string.IsNullOrWhiteSpace(value) ? null : value.Trim();
 }
+

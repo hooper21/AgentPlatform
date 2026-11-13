@@ -37,15 +37,22 @@ public sealed class KnowledgeSourceConfiguration : IEntityTypeConfiguration<Know
         builder.HasKey(source => source.Id);
 
         builder.Property(source => source.Type).HasMaxLength(30).IsRequired();
+        builder.Property(source => source.ProviderType).HasMaxLength(50).IsRequired().HasDefaultValue("legacy");
         builder.Property(source => source.Ref).HasMaxLength(500).IsRequired();
+        builder.Property(source => source.Config).IsJsonb();
+        builder.Property(source => source.CredentialsRef).HasMaxLength(200);
         builder.Property(source => source.Title).HasMaxLength(300).IsRequired();
         builder.Property(source => source.ChunkCount).IsRequired().HasDefaultValue(0);
         builder.Property(source => source.IndexStatus).HasMaxLength(20).IsRequired().HasDefaultValue("pending");
+        builder.Property(source => source.LastCursor).HasColumnType("text");
+        builder.Property(source => source.SyncSchedule).HasMaxLength(100);
         builder.Property(source => source.IndexMeta).IsJsonb();
         builder.Property(source => source.CreatedAt).IsTimestamp();
         builder.Property(source => source.UpdatedAt).IsTimestamp();
 
         builder.HasIndex(source => source.TenantId).HasDatabaseName("ix_ks_tenant");
+        builder.HasIndex(source => new { source.TenantId, source.ProviderType })
+            .HasDatabaseName("ix_ks_tenant_provider");
 
         builder.HasOne<Tenant>()
             .WithMany()

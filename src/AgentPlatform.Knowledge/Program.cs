@@ -40,6 +40,10 @@ app.MapGet("/", () => Results.Ok(new
         "GET /api/knowledge/sources",
         "GET /api/knowledge/sources/{sourceId}",
         "POST /api/knowledge/sources/{sourceId}/reindex",
+        "POST /api/knowledge/sources/{sourceId}/sync",
+        "GET /api/knowledge/providers",
+        "POST /api/knowledge/providers/{providerType}/test-connection",
+        "POST /api/knowledge/webhooks/{sourceId}",
         "GET /api/knowledge/search?query=&topK=5&threshold=0.77"
     }
 }));

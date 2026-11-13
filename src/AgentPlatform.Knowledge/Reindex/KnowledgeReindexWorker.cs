@@ -105,17 +105,21 @@ public sealed class KnowledgeReindexWorker(
             foreach (var source in list)
             {
                 var meta = KnowledgeIndexMeta.Parse(source.IndexMeta);
-                if (string.IsNullOrWhiteSpace(meta.ReindexCron))
+                var scheduleValue = string.IsNullOrWhiteSpace(source.SyncSchedule)
+                    ? meta.ReindexCron
+                    : source.SyncSchedule;
+
+                if (string.IsNullOrWhiteSpace(scheduleValue))
                 {
                     continue;
                 }
 
-                if (!CronSchedule.TryParse(meta.ReindexCron, out var schedule, out var error))
+                if (!CronSchedule.TryParse(scheduleValue, out var schedule, out var error))
                 {
                     _logger.LogWarning(
-                        "Knowledge source {SourceId} has invalid reindex_cron '{Cron}': {Error}",
+                        "Knowledge source {SourceId} has invalid sync_schedule '{Cron}': {Error}",
                         source.Id,
-                        meta.ReindexCron,
+                        scheduleValue,
                         error);
                     continue;
                 }
@@ -127,7 +131,10 @@ public sealed class KnowledgeReindexWorker(
                 }
 
                 var ingest = scope.ServiceProvider.GetRequiredService<KnowledgeIngestService>();
-                var updated = await ingest.ReindexAsync(source.Id, cancellationToken).ConfigureAwait(false);
+
+                // Инкремент, если провайдер его поддерживает и курсор уже есть;
+                // иначе KnowledgeIngestService выполняет полную переиндексацию.
+                var updated = await ingest.SyncAsync(source.Id, cancellationToken).ConfigureAwait(false);
                 if (updated is not null)
                 {
                     reindexed++;

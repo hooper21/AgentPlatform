@@ -123,6 +123,8 @@ services:
       <<: *service-environment
       # Кабинет (Blazor) — BFF: данные и решения по гейтам идут через Controller API.
       Controller__BaseUrl: http://controller:8080
+      # Знания: реестр провайдеров и инжест через Knowledge Service.
+      Knowledge__BaseUrl: http://knowledge:8080
     ports:
       - "8082:8080"
     depends_on:

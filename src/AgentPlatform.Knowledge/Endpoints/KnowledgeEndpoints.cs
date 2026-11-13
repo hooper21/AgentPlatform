@@ -2,10 +2,13 @@ using System.Text.Json;
 using AgentPlatform.Core.Abstractions;
 using AgentPlatform.Core.Dto;
 using AgentPlatform.Core.Enums;
+using AgentPlatform.Infrastructure.Persistence;
 using AgentPlatform.Infrastructure.Persistence.Entities;
+using AgentPlatform.Infrastructure.Tenancy;
 using AgentPlatform.Knowledge.Contracts;
 using AgentPlatform.Knowledge.Ingest;
 using AgentPlatform.Knowledge.Search;
+using Microsoft.EntityFrameworkCore;
 
 namespace AgentPlatform.Knowledge.Endpoints;
 
@@ -30,6 +33,10 @@ public static class KnowledgeEndpoints
         group.MapGet("/sources", ListSourcesAsync);
         group.MapGet("/sources/{sourceId:guid}", GetSourceAsync);
         group.MapPost("/sources/{sourceId:guid}/reindex", ReindexSourceAsync);
+        group.MapPost("/sources/{sourceId:guid}/sync", SyncSourceAsync);
+        group.MapGet("/providers", ListProviders);
+        group.MapPost("/providers/{providerType}/test-connection", TestProviderAsync);
+        group.MapPost("/webhooks/{sourceId:guid}", WebhookAsync);
         group.MapGet("/search", SearchAsync);
 
         return app;
@@ -105,6 +112,85 @@ public static class KnowledgeEndpoints
             : Results.Ok(Map(source));
     }
 
+    private static async Task<IResult> SyncSourceAsync(
+        Guid sourceId,
+        ITenantContext tenant,
+        KnowledgeIngestService ingest,
+        CancellationToken cancellationToken)
+    {
+        if (RequireTenant(tenant) is { } missing)
+        {
+            return missing;
+        }
+
+        var source = await ingest.SyncAsync(sourceId, cancellationToken).ConfigureAwait(false);
+        return source is null
+            ? Results.NotFound(new { error = "source_not_found", sourceId })
+            : Results.Ok(Map(source));
+    }
+
+    private static IResult ListProviders(KnowledgeProviderRegistry providers)
+        => Results.Ok(providers.Describe());
+
+    private static async Task<IResult> TestProviderAsync(
+        string providerType,
+        TestKnowledgeProviderRequest request,
+        KnowledgeProviderRegistry providers,
+        CancellationToken cancellationToken)
+    {
+        try
+        {
+            // Проверка идёт через контракт: тот же код, что и при инжесте.
+            var provider = providers.Resolve(providerType);
+            var config = new KnowledgeProviderConfig(
+                request.Title ?? string.Empty,
+                request.Location,
+                request.Content,
+                request.CredentialsRef,
+                request.Config);
+
+            var status = await provider.TestConnection(config, cancellationToken).ConfigureAwait(false);
+            return Results.Ok(status);
+        }
+        catch (ArgumentException exception)
+        {
+            return Results.BadRequest(new { error = "invalid_request", message = exception.Message });
+        }
+    }
+
+    /// <summary>
+    /// Общий вебхук для всех провайдеров: маршрутизация по source_id. Тенант
+    /// определяется по источнику — внешняя система не передаёт X-Tenant-Id.
+    /// TODO(contract): подпись и формат payload провайдер-специфичны; проверка
+    /// появится вместе с контрактом плагина внешней системы знаний.
+    /// </summary>
+    private static async Task<IResult> WebhookAsync(
+        Guid sourceId,
+        AgentPlatformDbContext context,
+        TenantContext tenant,
+        KnowledgeIngestService ingest,
+        CancellationToken cancellationToken)
+    {
+        var tenantId = await context.KnowledgeSources
+            .AsNoTracking()
+            .Where(source => source.Id == sourceId)
+            .Select(source => (Guid?)source.TenantId)
+            .FirstOrDefaultAsync(cancellationToken)
+            .ConfigureAwait(false);
+
+        if (tenantId is null)
+        {
+            return Results.NotFound(new { error = "source_not_found", sourceId });
+        }
+
+        tenant.SetTenant(tenantId.Value);
+
+        var source = await ingest.SyncAsync(sourceId, cancellationToken).ConfigureAwait(false);
+        return source is null
+            ? Results.NotFound(new { error = "source_not_found", sourceId })
+            : Results.Ok(Map(source));
+    }
+
     private static async Task<IResult> SearchAsync(
         string? query,
         int? topK,
@@ -158,7 +244,11 @@ public static class KnowledgeEndpoints
         source.IndexStatus,
         ParseMeta(source.IndexMeta),
         source.CreatedAt,
-        source.UpdatedAt);
+        source.UpdatedAt,
+        source.ProviderType,
+        source.SyncSchedule,
+        source.LastCursor,
+        ParseMeta(source.Config));
 
     private static JsonElement ParseMeta(string json)
     {

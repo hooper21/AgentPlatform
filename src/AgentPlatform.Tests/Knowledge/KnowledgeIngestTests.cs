@@ -57,7 +57,7 @@ public sealed class KnowledgeIngestTests
                 KnowledgeHarness.TenantA,
                 embedder: null,
                 options: options,
-                providers: [new AgentPlatform.Knowledge.Ingest.Providers.DocumentKnowledgeProvider(options)]);
+                providers: [new AgentPlatform.Knowledge.Ingest.Providers.DocumentProvider(options, TimeProvider.System)]);
 
             var source = await harness.Ingest.CreateAsync(new CreateKnowledgeSourceRequest(
                 "document",

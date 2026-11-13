@@ -1,0 +1,416 @@
+@page "/knowledge"
+@attribute [Authorize]
+@rendermode InteractiveServer
+@inject KnowledgeApiClient Api
+@inject AuthenticationStateProvider AuthState
+
+<PageTitle>Знания</PageTitle>
+<h1>Знания</h1>
+<p class="muted">
+    Тип источника выбирается из реестра провайдеров: document, site, faq.
+    Провайдер отдаёт сырой контент и курсор, чанкинг и эмбеддинги выполняет Knowledge Service.
+</p>
+
+@if (!string.IsNullOrWhiteSpace(error))
+{
+    <div class="alert alert-error">@error</div>
+}
+@if (!string.IsNullOrWhiteSpace(notice))
+{
+    <div class="alert alert-ok">@notice</div>
+}
+
+<section class="card">
+    <h2>Реестр провайдеров</h2>
+    @if (loading)
+    {
+        <p class="muted">Загрузка…</p>
+    }
+    else if (providers.Count == 0)
+    {
+        <p class="muted">Провайдеры не зарегистрированы.</p>
+    }
+
+    <div class="grid">
+        @foreach (var provider in providers)
+        {
+            <article class="card inner">
+                <h3>@provider.DisplayName <span class="badge">@provider.ProviderType</span></h3>
+                <p>@provider.Description</p>
+                <p class="muted">
+                    подключение: @provider.ConnectionType ·
+                    инкремент: @(provider.SupportsIncremental ? "да" : "нет") ·
+                    вебхук: @(provider.SupportsWebhooks ? "да" : "нет")
+                </p>
+                <ul class="tools">
+                    @foreach (var parameter in provider.Parameters)
+                    {
+                        <li>
+                            <strong>@parameter.DisplayName</strong>
+                            @if (parameter.Required)
+                            {
+                                <span class="badge badge-warn">обязателен</span>
+                            }
+                            @if (!string.IsNullOrWhiteSpace(parameter.Description))
+                            {
+                                <span class="muted">— @parameter.Description</span>
+                            }
+                        </li>
+                    }
+                </ul>
+
+                @if (canManage)
+                {
+                    <button class="primary" @onclick="() => BeginCreate(provider)">Добавить источник</button>
+                }
+            </article>
+        }
+    </div>
+</section>
+
+@if (selected is not null)
+{
+    <section class="card">
+        <h2>Новый источник: @selected.DisplayName</h2>
+        <div class="form-grid">
+            <label>Название <input @bind="title" maxlength="300" /></label>
+
+            @if (HasParameter(selected, "location"))
+            {
+                <label>
+                    @ParameterLabel(selected, "location", "Путь/URL")
+                    <input @bind="location" maxlength="500" placeholder="@LocationPlaceholder(selected)" />
+                </label>
+            }
+
+            <label>Синхронизация (cron UTC, 5 полей) <input @bind="syncSchedule" placeholder="0 3 * * *" /></label>
+            <label>Ссылка на секрет <input @bind="credentialsRef" placeholder="secret://knowledge/source" /></label>
+        </div>
+
+        @if (HasParameter(selected, "content"))
+        {
+            <label>
+                @ParameterLabel(selected, "content", "Текст записи")
+                <textarea rows="6" @bind="content"></textarea>
+            </label>
+        }
+
+        @foreach (var parameter in ExtraParameters(selected))
+        {
+            <label>
+
+<section class="card">
+    <div class="row between">
+        <h2>Источники знаний</h2>
+        @if (canManage && providers.Count > 0)
+        {
+            <button class="ghost" @onclick="() => BeginCreate(providers[0])" disabled="@saving">Новый источник</button>
+        }
+    </div>
+
+    @if (sources.Count == 0)
+    {
+        <p class="muted">Источников пока нет.</p>
+    }
+    else
+    {
+        <table>
+            <thead>
+                <tr>
+                    <th>Источник</th>
+                    <th>Провайдер</th>
+                    <th>Статус</th>
+                    <th>Чанки</th>
+                    <th>Расписание</th>
+                    <th>Курсор</th>
+                    <th></th>
+                </tr>
+            </thead>
+            <tbody>
+                @foreach (var source in sources)
+                {
+                    <tr>
+                        <td>
+                            <strong>@source.Title</strong>
+                            @if (!string.IsNullOrWhiteSpace(source.Ref))
+                            {
+                                <br /><span class="muted">@source.Ref</span>
+                            }
+                        </td>
+                        <td><span class="badge">@(source.ProviderType ?? source.Type)</span></td>
+                        <td><span class="badge @BadgeClass(source.IndexStatus)">@source.IndexStatus</span></td>
+                        <td>@source.ChunkCount</td>
+                        <td>@(source.SyncSchedule ?? "—")</td>
+                        <td><code>@ShortCursor(source.LastCursor)</code></td>
+                        <td>
+                            @if (canManage)
+                            {
+                                <div class="row gap">
+                                    <button class="ghost" @onclick="() => SyncAsync(source)" disabled="@saving">Синхронизировать</button>
+                                    <button class="ghost" @onclick="() => ReindexAsync(source)" disabled="@saving">Переиндексировать</button>
+                                </div>
+                            }
+                        </td>
+                    </tr>
+                }
+            </tbody>
+        </table>
+    }
+</section>
+
+                @parameter.DisplayName
+                <input value="@config.GetValueOrDefault(parameter.Name)"
+                       @onchange="eventArgs => config[parameter.Name] = eventArgs.Value?.ToString() ?? string.Empty" />
+            </label>
+        }
+
+        <div class="row gap">
+            <button class="primary" @onclick="SaveAsync" disabled="@saving">Создать и проиндексировать</button>
+            <button class="ghost" @onclick="CancelCreate" disabled="@saving">Отмена</button>
+        </div>
+    </section>
+}
+
+@code {
+    private const string LocationParameter = "location";
+    private const string ContentParameter = "content";
+
+    private Guid? tenantId;
+    private bool canManage;
+    private bool loading = true;
+    private bool saving;
+    private string? error;
+    private string? notice;
+
+    private List<KnowledgeProviderDto> providers = [];
+    private List<KnowledgeSourceDto> sources = [];
+
+    private KnowledgeProviderDto? selected;
+    private string? title;
+    private string? location;
+    private string? content;
+    private string? syncSchedule;
+    private string? credentialsRef;
+    private Dictionary<string, string> config = new(StringComparer.OrdinalIgnoreCase);
+
+    protected override async Task OnInitializedAsync()
+    {
+        var state = await AuthState.GetAuthenticationStateAsync();
+        canManage = CabinetClaims.CanManage(state.User);
+        tenantId = CabinetClaims.GetTenantId(state.User);
+
+        if (tenantId is null)
+        {
+            error = "В claim пользователя нет tenant_id: перелогиньтесь.";
+            loading = false;
+            return;
+        }
+
+        await ReloadAsync();
+        loading = false;
+    }
+
+    private async Task ReloadAsync()
+    {
+        if (tenantId is not { } id)
+        {
+            return;
+        }
+
+        try
+        {
+            providers = await Api.GetProvidersAsync(id);
+            sources = await Api.GetSourcesAsync(id);
+            error = null;
+        }
+        catch (CabinetApiException exception)
+        {
+            error = $"{exception.Message} Проверьте, что Knowledge Service запущен.";
+        }
+    }
+
+    private void BeginCreate(KnowledgeProviderDto provider)
+    {
+        error = null;
+        notice = null;
+        selected = provider;
+        title = null;
+        location = null;
+        content = null;
+        syncSchedule = null;
+        credentialsRef = null;
+        config = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
+
+        // Значения по умолчанию из GetSourceInfo() провайдера.
+        foreach (var parameter in ExtraParameters(provider))
+        {
+            if (!string.IsNullOrWhiteSpace(parameter.DefaultValue))
+            {
+                config[parameter.Name] = parameter.DefaultValue;
+            }
+        }
+    }
+
+    private void CancelCreate()
+    {
+        selected = null;
+        error = null;
+        notice = null;
+    }
+
+
+    private async Task SaveAsync()
+    {
+        if (selected is null || tenantId is not { } id || !canManage)
+        {
+            return;
+        }
+
+        error = null;
+        notice = null;
+
+        if (string.IsNullOrWhiteSpace(title))
+        {
+            error = "Укажите название источника.";
+            return;
+        }
+
+        if (HasParameter(selected, LocationParameter) && string.IsNullOrWhiteSpace(location))
+        {
+            error = "Укажите путь к файлу или URL источника.";
+            return;
+        }
+
+        if (HasParameter(selected, ContentParameter) && string.IsNullOrWhiteSpace(content))
+        {
+            error = "Заполните текст записи.";
+            return;
+        }
+
+        saving = true;
+
+        try
+        {
+            var parameters = config
+                .Where(pair => !string.IsNullOrWhiteSpace(pair.Value))
+                .ToDictionary(
+                    pair => pair.Key,
+                    pair => (string?)pair.Value.Trim(),
+                    StringComparer.OrdinalIgnoreCase);
+
+            var request = new KnowledgeSourceCreateDto(
+                selected.ProviderType,
+                string.IsNullOrWhiteSpace(location) ? null : location.Trim(),
+                title.Trim(),
+                string.IsNullOrWhiteSpace(content) ? null : content.Trim(),
+                string.IsNullOrWhiteSpace(syncSchedule) ? null : syncSchedule.Trim(),
+                string.IsNullOrWhiteSpace(credentialsRef) ? null : credentialsRef.Trim(),
+                parameters.Count == 0 ? null : parameters);
+
+            var created = await Api.CreateSourceAsync(id, request);
+            notice = $"Источник «{created.Title}» создан: {created.IndexStatus}, чанков {created.ChunkCount}.";
+            CancelCreate();
+            await ReloadAsync();
+        }
+        catch (CabinetApiException exception)
+        {
+            error = exception.Message;
+        }
+        finally
+        {
+            saving = false;
+        }
+    }
+
+    private async Task SyncAsync(KnowledgeSourceDto source)
+    {
+        if (tenantId is not { } id || !canManage)
+        {
+            return;
+        }
+
+        saving = true;
+        error = null;
+        notice = null;
+
+        try
+        {
+            var updated = await Api.SyncSourceAsync(id, source.Id);
+            notice = $"«{updated.Title}»: {updated.IndexStatus}, чанков {updated.ChunkCount}, курсор обновлён.";
+            await ReloadAsync();
+        }
+        catch (CabinetApiException exception)
+        {
+            error = exception.Message;
+        }
+        finally
+        {
+            saving = false;
+        }
+    }
+
+    private async Task ReindexAsync(KnowledgeSourceDto source)
+    {
+        if (tenantId is not { } id || !canManage)
+        {
+            return;
+        }
+
+        saving = true;
+        error = null;
+        notice = null;
+
+        try
+        {
+            var updated = await Api.ReindexSourceAsync(id, source.Id);
+            notice = $"«{updated.Title}» переиндексирован: {updated.IndexStatus}, чанков {updated.ChunkCount}.";
+            await ReloadAsync();
+        }
+        catch (CabinetApiException exception)
+        {
+            error = exception.Message;
+        }
+        finally
+        {
+            saving = false;
+        }
+    }
+
+    private static bool HasParameter(KnowledgeProviderDto provider, string name)
+        => provider.Parameters.Any(parameter =>
+            string.Equals(parameter.Name, name, StringComparison.OrdinalIgnoreCase));
+
+    private static string ParameterLabel(KnowledgeProviderDto provider, string name, string fallback)
+    {
+        var parameter = provider.Parameters.FirstOrDefault(candidate =>
+            string.Equals(candidate.Name, name, StringComparison.OrdinalIgnoreCase));
+
+        return parameter is null || string.IsNullOrWhiteSpace(parameter.DisplayName)
+            ? fallback
+            : parameter.Required ? $"{parameter.DisplayName} *" : parameter.DisplayName;
+    }
+
+    private static string LocationPlaceholder(KnowledgeProviderDto provider)
+        => string.Equals(provider.ProviderType, "site", StringComparison.OrdinalIgnoreCase)
+            ? "https://example.com/docs"
+            : "docs/policy.md";
+
+    private static IEnumerable<KnowledgeProviderParameterDto> ExtraParameters(KnowledgeProviderDto provider)
+        => provider.Parameters.Where(parameter =>
+            !string.Equals(parameter.Name, LocationParameter, StringComparison.OrdinalIgnoreCase)
+            && !string.Equals(parameter.Name, ContentParameter, StringComparison.OrdinalIgnoreCase));
+
+    private static string BadgeClass(string status)
+        => status switch
+        {
+            "ready" => "badge-ok",
+            "indexing" or "error" => "badge-warn",
+            _ => string.Empty
+        };
+
+    private static string ShortCursor(string? cursor)
+        => string.IsNullOrWhiteSpace(cursor)
+            ? "—"
+            : cursor.Length <= 16 ? cursor : $"{cursor[..16]}…";
+}
+

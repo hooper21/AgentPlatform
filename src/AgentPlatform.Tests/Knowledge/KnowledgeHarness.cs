@@ -69,12 +69,14 @@ internal sealed class KnowledgeHarness : IDisposable
 
         var providerList = providers.Length > 0
             ? providers.ToList()
-            : [new FaqKnowledgeProvider(), new DocumentKnowledgeProvider(Options)];
+            : BuildDefaultProviders();
+
+        Registry = new KnowledgeProviderRegistry(providerList);
 
         Ingest = new KnowledgeIngestService(
             TenantContext,
             Sources,
-            providerList,
+            Registry,
             Embedder,
             Store,
             Options,
@@ -102,6 +104,8 @@ internal sealed class KnowledgeHarness : IDisposable
 
     public IKnowledgeEmbedder Embedder { get; }
 
+    public KnowledgeProviderRegistry Registry { get; }
+
     public KnowledgeIngestService Ingest { get; }
 
     public KnowledgeSearchService Search { get; }
@@ -109,4 +113,20 @@ internal sealed class KnowledgeHarness : IDisposable
     public void SwitchTenant(Guid tenantId) => TenantContext.TenantId = tenantId;
 
     public void Dispose() => _database.Dispose();
+
+    private List<IKnowledgeProvider> BuildDefaultProviders() =>
+    [
+        new DocumentProvider(Options, TimeProvider.System),
+        new SiteProvider(
+            new PassiveHttpClientFactory(new HttpClient()),
+            Options,
+            TimeProvider.System,
+            NullLogger<SiteProvider>.Instance),
+        new FaqProvider(TimeProvider.System)
+    ];
+
+    private sealed class PassiveHttpClientFactory(HttpClient client) : IHttpClientFactory
+    {
+        public HttpClient CreateClient(string name) => client;
+    }
 }

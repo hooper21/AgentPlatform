@@ -1,3 +1,5 @@
+using System.Text.Json;
+
 namespace AgentPlatform.TenantApp.Web;
 
 /// <summary>Агент кабинета (ответ Controller API).</summary>
@@ -126,3 +128,47 @@ public sealed record DialogMessageRequestDto(string Message);
 
 /// <summary>Решение по гейту.</summary>
 public sealed record ApprovalDecisionDto(string Decision, string? Comment, Guid? ActorId);
+
+/// <summary>Параметр подключения провайдера знаний (из реестра).</summary>
+public sealed record KnowledgeProviderParameterDto(
+    string Name,
+    string DisplayName,
+    bool Required,
+    string? Description,
+    string? DefaultValue);
+
+/// <summary>Описание провайдера знаний (GET /api/knowledge/providers).</summary>
+public sealed record KnowledgeProviderDto(
+    string ProviderType,
+    string DisplayName,
+    string ConnectionType,
+    string Description,
+    IReadOnlyList<KnowledgeProviderParameterDto> Parameters,
+    bool SupportsIncremental,
+    bool SupportsWebhooks);
+
+/// <summary>Источник знаний в кабинете.</summary>
+public sealed record KnowledgeSourceDto(
+    Guid Id,
+    string Type,
+    string? Ref,
+    string Title,
+    int ChunkCount,
+    string IndexStatus,
+    JsonElement IndexMeta,
+    DateTimeOffset CreatedAt,
+    DateTimeOffset UpdatedAt,
+    string? ProviderType,
+    string? SyncSchedule,
+    string? LastCursor,
+    JsonElement? Config);
+
+/// <summary>Создание источника знаний через Knowledge Service.</summary>
+public sealed record KnowledgeSourceCreateDto(
+    string? Type,
+    string? Ref,
+    string? Title,
+    string? Content,
+    string? SyncSchedule,
+    string? CredentialsRef,
+    IReadOnlyDictionary<string, string?>? Config);

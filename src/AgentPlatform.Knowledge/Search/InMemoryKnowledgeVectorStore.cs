@@ -7,7 +7,13 @@ namespace AgentPlatform.Knowledge.Search;
 /// <param name="Content">Текст чанка.</param>
 /// <param name="Metadata">jsonb-метаданные.</param>
 /// <param name="Embedding">Вектор.</param>
-public sealed record KnowledgeChunkSnapshot(long Id, string Content, string Metadata, float[] Embedding);
+/// <param name="ExternalId">Идентификатор страницы источника.</param>
+public sealed record KnowledgeChunkSnapshot(
+    long Id,
+    string Content,
+    string Metadata,
+    float[] Embedding,
+    string? ExternalId = null);
 
 /// <summary>
 /// In-memory векторное хранилище: косинусное сходство в памяти процесса.
@@ -16,7 +22,16 @@ public sealed record KnowledgeChunkSnapshot(long Id, string Content, string Meta
 /// </summary>
 public sealed class InMemoryKnowledgeVectorStore : IKnowledgeVectorStore
 {
-    private sealed record StoredChunk(long Id, Guid TenantId, Guid SourceId, string Title, string SourceType, string Content, string Metadata, float[] Embedding);
+    private sealed record StoredChunk(
+        long Id,
+        Guid TenantId,
+        Guid SourceId,
+        string Title,
+        string SourceType,
+        string Content,
+        string Metadata,
+        float[] Embedding,
+        string? ExternalId);
 
     private readonly Dictionary<(Guid TenantId, Guid SourceId), (string Title, string SourceType, List<StoredChunk> Chunks)> _sources = [];
     private readonly object _gate = new();
@@ -33,7 +48,8 @@ public sealed class InMemoryKnowledgeVectorStore : IKnowledgeVectorStore
                         chunk.Id,
                         chunk.Content,
                         chunk.Metadata,
-                        chunk.Embedding))
+                        chunk.Embedding,
+                        chunk.ExternalId))
                     .ToList()
                 : [];
         }
@@ -64,19 +80,61 @@ public sealed class InMemoryKnowledgeVectorStore : IKnowledgeVectorStore
 
         lock (_gate)
         {
-            var stored = chunks
-                .Select(chunk => new StoredChunk(
-                    ++_nextId,
-                    source.TenantId,
-                    source.SourceId,
-                    source.Title,
-                    source.SourceType,
-                    chunk.Content,
-                    chunk.Metadata,
-                    chunk.Embedding))
+            var stored = CreateStored(source, chunks);
+            _sources[(source.TenantId, source.SourceId)] = (source.Title, source.SourceType, stored);
+        }
+
+        return Task.CompletedTask;
+    }
+
+    /// <inheritdoc />
+    public Task ReplacePageChunksAsync(
+        KnowledgeSourceRef source,
+        string externalId,
+        IReadOnlyList<KnowledgeChunkEmbedding> chunks,
+        CancellationToken cancellationToken = default)
+    {
+        ArgumentNullException.ThrowIfNull(source);
+        ArgumentException.ThrowIfNullOrWhiteSpace(externalId);
+        ArgumentNullException.ThrowIfNull(chunks);
+
+        lock (_gate)
+        {
+            _sources.TryGetValue((source.TenantId, source.SourceId), out var existing);
+            var stored = existing.Chunks is null
+                ? []
+                : existing.Chunks
+                    .Where(chunk => !string.Equals(chunk.ExternalId, externalId, StringComparison.Ordinal))
+                    .ToList();
+
+            stored.AddRange(CreateStored(source, chunks));
+            _sources[(source.TenantId, source.SourceId)] = (source.Title, source.SourceType, stored);
+        }
+
+        return Task.CompletedTask;
+    }
+
+    /// <inheritdoc />
+    public Task DeletePageChunksAsync(
+        Guid tenantId,
+        Guid sourceId,
+        string externalId,
+        CancellationToken cancellationToken = default)
+    {
+        ArgumentException.ThrowIfNullOrWhiteSpace(externalId);
+
+        lock (_gate)
+        {
+            if (!_sources.TryGetValue((tenantId, sourceId), out var source))
+            {
+                return Task.CompletedTask;
+            }
+
+            var remaining = source.Chunks
+                .Where(chunk => !string.Equals(chunk.ExternalId, externalId, StringComparison.Ordinal))
                 .ToList();
 
-            _sources[(source.TenantId, source.SourceId)] = (source.Title, source.SourceType, stored);
+            _sources[(tenantId, sourceId)] = (source.Title, source.SourceType, remaining);
         }
 
         return Task.CompletedTask;
@@ -92,6 +150,22 @@ public sealed class InMemoryKnowledgeVectorStore : IKnowledgeVectorStore
 
         return Task.CompletedTask;
     }
+
+    private List<StoredChunk> CreateStored(
+        KnowledgeSourceRef source,
+        IReadOnlyList<KnowledgeChunkEmbedding> chunks)
+        => chunks
+            .Select(chunk => new StoredChunk(
+                ++_nextId,
+                source.TenantId,
+                source.SourceId,
+                source.Title,
+                source.SourceType,
+                chunk.Content,
+                chunk.Metadata,
+                chunk.Embedding,
+                chunk.ExternalId))
+            .ToList();
 
     /// <inheritdoc />
     public Task<IReadOnlyList<KnowledgeHit>> SearchAsync(

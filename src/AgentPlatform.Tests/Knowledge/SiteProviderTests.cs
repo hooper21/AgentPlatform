@@ -1,6 +1,7 @@
 using System.Net;
 using System.Net.Http.Headers;
 using System.Text;
+using AgentPlatform.Core.Dto;
 using AgentPlatform.Knowledge.Configuration;
 using AgentPlatform.Knowledge.Ingest.Providers;
 using Microsoft.Extensions.Logging.Abstractions;
@@ -8,10 +9,11 @@ using Microsoft.Extensions.Logging.Abstractions;
 namespace AgentPlatform.Tests.Knowledge;
 
 /// <summary>
-/// Site-инжест: обход одного уровня, robots.txt соблюдается, внешние хосты
-/// не обходятся. HTTP подменяется fake handler (без сети).
+/// Site-провайдер: обход одного уровня, robots.txt соблюдается, внешние хосты
+/// не обходятся. HTTP подменяется fake handler (без сети). Вызовы идут через
+/// контракт IKnowledgeProvider (FetchAll/TestConnection).
 /// </summary>
-public sealed class SiteKnowledgeProviderTests
+public sealed class SiteProviderTests
 {
     [Fact]
     public async Task Crawl_respects_robots_and_visits_one_level_of_same_origin()
@@ -36,10 +38,10 @@ public sealed class SiteKnowledgeProviderTests
         });
 
         var provider = CreateProvider(handler);
-        var pages = new List<AgentPlatform.Core.Dto.KnowledgePage>();
+        var config = new KnowledgeProviderConfig("Магазин", Location: "https://shop.example/");
+        var pages = new List<KnowledgePage>();
 
-        await foreach (var page in provider.ReadAsync(
-            new AgentPlatform.Core.Abstractions.KnowledgeProviderRequest("Магазин", "https://shop.example/")))
+        await foreach (var page in provider.FetchAll(config))
         {
             pages.Add(page);
         }
@@ -47,15 +49,21 @@ public sealed class SiteKnowledgeProviderTests
         Assert.Equal(2, pages.Count);
         Assert.Equal("Главная", pages[0].Title);
         Assert.Equal("О нас", pages[1].Title);
+        Assert.Equal("https://shop.example/", pages[0].ExternalId);
+        Assert.Equal("https://shop.example/", pages[0].Metadata!.Url);
+        Assert.False(string.IsNullOrWhiteSpace(pages[0].Cursor));
         Assert.DoesNotContain(pages, page => page.Content.Contains("второй уровень", StringComparison.Ordinal));
         Assert.DoesNotContain(pages, page => page.Content.Contains("чужой", StringComparison.Ordinal));
         Assert.DoesNotContain(
             handler.Requests,
             url => url.Contains("/private", StringComparison.OrdinalIgnoreCase));
+
+        var status = await provider.TestConnection(config);
+        Assert.True(status.IsHealthy, status.Message);
     }
 
     [Fact]
-    public async Task Robots_disallow_of_entry_url_fails_ingest()
+    public async Task Robots_disallow_of_entry_url_fails_ingest_and_test_connection()
     {
         var handler = new FakeSiteHandler(new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase)
         {
@@ -64,16 +72,20 @@ public sealed class SiteKnowledgeProviderTests
         });
 
         var provider = CreateProvider(handler);
+        var config = new KnowledgeProviderConfig(
+            "Private",
+            Location: "https://shop.example/private/page");
 
         await Assert.ThrowsAsync<InvalidOperationException>(async () =>
         {
-            await foreach (var _ in provider.ReadAsync(
-                new AgentPlatform.Core.Abstractions.KnowledgeProviderRequest(
-                    "Private",
-                    "https://shop.example/private/page")))
+            await foreach (var _ in provider.FetchAll(config))
             {
             }
         });
+
+        var status = await provider.TestConnection(config);
+        Assert.False(status.IsHealthy);
+        Assert.Contains("robots.txt", status.Message, StringComparison.OrdinalIgnoreCase);
     }
 
     [Fact]
@@ -86,23 +98,23 @@ public sealed class SiteKnowledgeProviderTests
         };
 
         var client = new HttpClient(new HangingHandler());
-        var provider = new SiteKnowledgeProvider(
+        var provider = new SiteProvider(
             new FakeHttpClientFactory(client),
             options,
-            NullLogger<SiteKnowledgeProvider>.Instance);
+            TimeProvider.System,
+            NullLogger<SiteProvider>.Instance);
+
+        var config = new KnowledgeProviderConfig("Медленный сайт", Location: "https://slow.example/");
 
         await Assert.ThrowsAsync<TimeoutException>(async () =>
         {
-            await foreach (var _ in provider.ReadAsync(
-                new AgentPlatform.Core.Abstractions.KnowledgeProviderRequest(
-                    "Медленный сайт",
-                    "https://slow.example/")))
+            await foreach (var _ in provider.FetchAll(config))
             {
             }
         });
     }
 
-    private static SiteKnowledgeProvider CreateProvider(FakeSiteHandler handler)
+    private static SiteProvider CreateProvider(FakeSiteHandler handler)
     {
         var options = new KnowledgeOptions
         {
@@ -111,10 +123,11 @@ public sealed class SiteKnowledgeProviderTests
         };
 
         var client = new HttpClient(handler) { Timeout = TimeSpan.FromSeconds(5) };
-        return new SiteKnowledgeProvider(
+        return new SiteProvider(
             new FakeHttpClientFactory(client),
             options,
-            NullLogger<SiteKnowledgeProvider>.Instance);
+            TimeProvider.System,
+            NullLogger<SiteProvider>.Instance);
     }
 
     private sealed class HangingHandler : HttpMessageHandler
@@ -161,3 +174,4 @@ public sealed class SiteKnowledgeProviderTests
         }
     }
 }
+

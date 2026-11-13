@@ -47,15 +47,4 @@ public sealed record KnowledgeContext(string Query, IReadOnlyList<KnowledgeHit> 
     public static KnowledgeContext Empty(string query) => new(query, []);
 }
 
-/// <summary>Страница контента, которую отдаёт провайдер знаний при инжесте.</summary>
-/// <param name="Title">Заголовок страницы (для метаданных чанков и блока RAG).</param>
-/// <param name="Content">Текст страницы без разметки.</param>
-/// <param name="Heading">Заголовок раздела внутри страницы (если есть).</param>
-/// <param name="Position">Позиция страницы в источнике (0-based).</param>
-/// <param name="Cursor">Инкрементальный курсор провайдера (для следующего чтения).</param>
-public sealed record KnowledgePage(
-    string Title,
-    string Content,
-    string? Heading,
-    int Position,
-    string? Cursor = null);
+

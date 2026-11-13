@@ -6,7 +6,12 @@ namespace AgentPlatform.Knowledge.Search;
 /// <param name="Content">Текст чанка.</param>
 /// <param name="Metadata">jsonb-метаданные (заголовок, источник, позиция).</param>
 /// <param name="Embedding">Вектор эмбеддинга (размерность проверена до записи).</param>
-public sealed record KnowledgeChunkEmbedding(string Content, string Metadata, float[] Embedding);
+/// <param name="ExternalId">Идентификатор страницы источника (metadata.external_id).</param>
+public sealed record KnowledgeChunkEmbedding(
+    string Content,
+    string Metadata,
+    float[] Embedding,
+    string? ExternalId = null);
 
 /// <summary>Идентификация источника при замене чанков.</summary>
 /// <param name="TenantId">Тенант-владелец.</param>
@@ -34,6 +39,25 @@ public interface IKnowledgeVectorStore
     Task ReplaceSourceChunksAsync(
         KnowledgeSourceRef source,
         IReadOnlyList<KnowledgeChunkEmbedding> chunks,
+        CancellationToken cancellationToken = default);
+
+    /// <summary>
+    /// Заменяет чанки одной страницы источника (инкрементальная синхронизация):
+    /// удаляет прежние чанки по external_id и вставляет новые.
+    /// </summary>
+    Task ReplacePageChunksAsync(
+        KnowledgeSourceRef source,
+        string externalId,
+        IReadOnlyList<KnowledgeChunkEmbedding> chunks,
+        CancellationToken cancellationToken = default);
+
+    /// <summary>
+    /// Удаляет чанки страницы источника по external_id (tombstone: isDeleted=true).
+    /// </summary>
+    Task DeletePageChunksAsync(
+        Guid tenantId,
+        Guid sourceId,
+        string externalId,
         CancellationToken cancellationToken = default);
 
     /// <summary>Удаляет чанки источника (служебная операция инжеста).</summary>

@@ -65,6 +65,15 @@ builder.Services.AddHttpClient<ControllerApiClient>(client =>
     client.Timeout = TimeSpan.FromMinutes(2);
 });
 
+// Знания: кабинет работает с реестром провайдеров и источниками через API
+// Knowledge Service (tenant — заголовком X-Tenant-Id, v1-заглушка).
+var knowledgeBaseUrl = builder.Configuration["Knowledge:BaseUrl"] ?? "http://localhost:5281";
+builder.Services.AddHttpClient<KnowledgeApiClient>(client =>
+{
+    client.BaseAddress = new Uri(knowledgeBaseUrl, UriKind.Absolute);
+    client.Timeout = TimeSpan.FromMinutes(2);
+});
+
 builder.Services.AddRazorComponents().AddInteractiveServerComponents();
 
 var app = builder.Build();

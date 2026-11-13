@@ -156,6 +156,8 @@ services:
     image: agentplatform/knowledge:${AGENTPLATFORM_IMAGE_TAG:-dev}
     environment:
       <<: *service-environment
+      # KMS-заглушка: учётные данные внешних источников знаний шифруются AES-256.
+      AGENTPLATFORM_SECRETS_MASTER_KEY: ${AGENTPLATFORM_SECRETS_MASTER_KEY:-YWdlbnRwbGF0Zm9ybS1kZXYtbWFzdGVyLWtleS0zMmI=}
     ports:
       - "8084:8080"
     depends_on:

@@ -7,7 +7,7 @@
 <PageTitle>Знания</PageTitle>
 <h1>Знания</h1>
 <p class="muted">
-    Тип источника выбирается из реестра провайдеров: document, site, faq.
+    Тип источника выбирается из реестра провайдеров: document, site, faq, confluence.
     Провайдер отдаёт сырой контент и курсор, чанкинг и эмбеддинги выполняет Knowledge Service.
 </p>
 
@@ -72,6 +72,50 @@
 {
     <section class="card">
         <h2>Новый источник: @selected.DisplayName</h2>
+
+        @if (!string.IsNullOrWhiteSpace(setupWarning))
+        {
+            <div class="alert alert-warn">@setupWarning</div>
+        }
+
+        @if (HasParameter(selected, InstanceTypeParameter))
+        {
+            <div class="form-grid">
+                <label>
+                    Тип инсталляции
+                    <select value="@instanceType" @onchange="OnInstanceTypeChanged">
+                        <option value="cloud">Облачный Atlassian (REST API v2, OAuth 2.0)</option>
+                        <option value="onpremise">On-premise Server/DC (REST API v1, API-токен)</option>
+                    </select>
+                </label>
+                <label>
+                    Базовый URL
+                    <input @bind="baseUrl" maxlength="500" placeholder="https://example.atlassian.net/wiki" />
+                </label>
+                <label>
+                    Аутентификация
+                    <select @bind="authType">
+                        <option value="oauth2">OAuth 2.0 (access token)</option>
+                        <option value="apiToken">API-токен/логин</option>
+                    </select>
+                </label>
+            </div>
+
+            <div class="form-grid">
+                @if (string.Equals(authType, "oauth2", StringComparison.OrdinalIgnoreCase))
+                {
+                    <label>Access token <input type="password" @bind="accessToken" autocomplete="off" /></label>
+                    <label>Cloud ID (необязательно) <input @bind="cloudId" autocomplete="off" /></label>
+                }
+                else
+                {
+                    <label>Логин <input @bind="username" autocomplete="off" /></label>
+                    <label>API-токен <input type="password" @bind="apiToken" autocomplete="off" /></label>
+                    <label>Personal Access Token <input type="password" @bind="personalAccessToken" autocomplete="off" /></label>
+                }
+            </div>
+        }
+
         <div class="form-grid">
             <label>Название <input @bind="title" maxlength="300" /></label>
 
@@ -87,6 +131,33 @@
             <label>Ссылка на секрет <input @bind="credentialsRef" placeholder="secret://knowledge/source" /></label>
         </div>
 
+        <div class="row gap">
+            <button class="ghost" @onclick="TestConnectionAsync" disabled="@saving">Проверить подключение</button>
+            @if (testStatus is not null)
+            {
+                <span class="badge @(testStatus.IsHealthy ? "badge-ok" : "badge-warn")">
+                    @testStatus.Message
+                </span>
+            }
+        </div>
+
+        @if (spaces.Count > 0)
+        {
+            <h3>Пространства для индексации</h3>
+            <p class="muted">Отметьте пространства: в чат попадёт только то, что доступно этому токену.</p>
+            <div class="form-grid">
+                @foreach (var space in spaces)
+                {
+                    <label class="row gap">
+                        <input type="checkbox"
+                               checked="@selectedSpaces.Contains(space.Key)"
+                               @onchange="eventArgs => ToggleSpace(space.Key, eventArgs.Value is bool value && value)" />
+                        <span>@space.Name <span class="muted">(@space.Key)</span></span>
+                    </label>
+                }
+            </div>
+        }
+
         @if (HasParameter(selected, "content"))
         {
             <label>
@@ -98,6 +169,18 @@
         @foreach (var parameter in ExtraParameters(selected))
         {
             <label>
+                @parameter.DisplayName
+                <input value="@config.GetValueOrDefault(parameter.Name)"
+                       @onchange="eventArgs => config[parameter.Name] = eventArgs.Value?.ToString() ?? string.Empty" />
+            </label>
+        }
+
+        <div class="row gap">
+            <button class="primary" @onclick="SaveAsync" disabled="@saving">Создать и проиндексировать</button>
+            <button class="ghost" @onclick="CancelCreate" disabled="@saving">Отмена</button>
+        </div>
+    </section>
+}
 
 <section class="card">
     <div class="row between">
@@ -158,22 +241,13 @@
     }
 </section>
 
-                @parameter.DisplayName
-                <input value="@config.GetValueOrDefault(parameter.Name)"
-                       @onchange="eventArgs => config[parameter.Name] = eventArgs.Value?.ToString() ?? string.Empty" />
-            </label>
-        }
-
-        <div class="row gap">
-            <button class="primary" @onclick="SaveAsync" disabled="@saving">Создать и проиндексировать</button>
-            <button class="ghost" @onclick="CancelCreate" disabled="@saving">Отмена</button>
-        </div>
-    </section>
-}
-
 @code {
     private const string LocationParameter = "location";
     private const string ContentParameter = "content";
+    private const string InstanceTypeParameter = "instanceType";
+    private const string BaseUrlParameter = "baseUrl";
+    private const string AuthTypeParameter = "authType";
+    private const string SpacesParameter = "spaces";
 
     private Guid? tenantId;
     private bool canManage;
@@ -192,6 +266,20 @@
     private string? syncSchedule;
     private string? credentialsRef;
     private Dictionary<string, string> config = new(StringComparer.OrdinalIgnoreCase);
+
+    // Confluence: мастер подключения (тип инсталляции, секрет, TestConnection, пространства).
+    private string instanceType = "cloud";
+    private string? baseUrl;
+    private string authType = "oauth2";
+    private string? accessToken;
+    private string? cloudId;
+    private string? username;
+    private string? apiToken;
+    private string? personalAccessToken;
+    private string? setupWarning;
+    private KnowledgeConnectionStatusDto? testStatus;
+    private List<KnowledgeSpaceDto> spaces = [];
+    private readonly HashSet<string> selectedSpaces = new(StringComparer.OrdinalIgnoreCase);
 
     protected override async Task OnInitializedAsync()
     {
@@ -229,7 +317,7 @@
         }
     }
 
-    private void BeginCreate(KnowledgeProviderDto provider)
+    private async Task BeginCreate(KnowledgeProviderDto provider)
     {
         error = null;
         notice = null;
@@ -241,12 +329,47 @@
         credentialsRef = null;
         config = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
 
+        instanceType = "cloud";
+        baseUrl = null;
+        authType = "oauth2";
+        accessToken = null;
+        cloudId = null;
+        username = null;
+        apiToken = null;
+        personalAccessToken = null;
+        setupWarning = null;
+        testStatus = null;
+        spaces = [];
+        selectedSpaces.Clear();
+
         // Значения по умолчанию из GetSourceInfo() провайдера.
         foreach (var parameter in ExtraParameters(provider))
         {
             if (!string.IsNullOrWhiteSpace(parameter.DefaultValue))
             {
                 config[parameter.Name] = parameter.DefaultValue;
+            }
+        }
+
+        if (HasParameter(provider, InstanceTypeParameter))
+        {
+            instanceType = config.GetValueOrDefault(InstanceTypeParameter) ?? "cloud";
+            authType = config.GetValueOrDefault(AuthTypeParameter)
+                ?? (IsCloud() ? "oauth2" : "apiToken");
+            baseUrl = config.GetValueOrDefault(BaseUrlParameter);
+
+            // Предупреждение шага подключения (права доступа не переносятся в чат).
+            if (tenantId is { } id)
+            {
+                try
+                {
+                    var setup = await Api.GetProviderSetupAsync(id, provider.ProviderType);
+                    setupWarning = setup.Warning;
+                }
+                catch (CabinetApiException)
+                {
+                    // Провайдер без мастера: предупреждения нет.
+                }
             }
         }
     }
@@ -287,25 +410,44 @@
             return;
         }
 
+        if (HasParameter(selected, InstanceTypeParameter))
+        {
+            if (!IsCloud() && string.IsNullOrWhiteSpace(baseUrl))
+            {
+                error = "Для on-premise Confluence укажите базовый URL инсталляции.";
+                return;
+            }
+
+            if (HasParameter(selected, SpacesParameter)
+                && (testStatus?.IsHealthy != true || selectedSpaces.Count == 0))
+            {
+                error = "Нажмите «Проверить подключение» и отметьте хотя бы одно пространство.";
+                return;
+            }
+
+            if (string.IsNullOrWhiteSpace(credentialsRef) && BuildCredentials() is null)
+            {
+                error = "Введите учётные данные Confluence или укажите ссылку на сохранённый секрет.";
+                return;
+            }
+        }
+
         saving = true;
 
         try
         {
-            var parameters = config
-                .Where(pair => !string.IsNullOrWhiteSpace(pair.Value))
-                .ToDictionary(
-                    pair => pair.Key,
-                    pair => (string?)pair.Value.Trim(),
-                    StringComparer.OrdinalIgnoreCase);
+            var parameters = BuildParameters();
+            var credentials = string.IsNullOrWhiteSpace(credentialsRef) ? BuildCredentials() : null;
 
             var request = new KnowledgeSourceCreateDto(
                 selected.ProviderType,
-                string.IsNullOrWhiteSpace(location) ? null : location.Trim(),
+                string.IsNullOrWhiteSpace(location) ? baseUrl?.Trim() : location.Trim(),
                 title.Trim(),
                 string.IsNullOrWhiteSpace(content) ? null : content.Trim(),
                 string.IsNullOrWhiteSpace(syncSchedule) ? null : syncSchedule.Trim(),
                 string.IsNullOrWhiteSpace(credentialsRef) ? null : credentialsRef.Trim(),
-                parameters.Count == 0 ? null : parameters);
+                parameters.Count == 0 ? null : parameters,
+                credentials);
 
             var created = await Api.CreateSourceAsync(id, request);
             notice = $"Источник «{created.Title}» создан: {created.IndexStatus}, чанков {created.ChunkCount}.";
@@ -376,6 +518,147 @@
         }
     }
 
+    private async Task TestConnectionAsync()
+    {
+        if (selected is null || tenantId is not { } id || !canManage)
+        {
+            return;
+        }
+
+        saving = true;
+        error = null;
+        notice = null;
+        testStatus = null;
+        spaces = [];
+        selectedSpaces.Clear();
+
+        try
+        {
+            var request = BuildTestRequest();
+            testStatus = await Api.TestConnectionAsync(id, selected.ProviderType, request);
+
+            if (!testStatus.IsHealthy)
+            {
+                error = string.IsNullOrWhiteSpace(testStatus.Error)
+                    ? testStatus.Message
+                    : $"{testStatus.Message} {testStatus.Error}";
+                return;
+            }
+
+            notice = testStatus.Message;
+
+            if (HasParameter(selected, SpacesParameter))
+            {
+                spaces = await Api.GetSpacesAsync(id, selected.ProviderType, request);
+
+                if (spaces.Count == 0)
+                {
+                    error = "Подключение установлено, но токену не доступно ни одно пространство.";
+                }
+            }
+        }
+        catch (CabinetApiException exception)
+        {
+            error = exception.Message;
+        }
+        finally
+        {
+            saving = false;
+        }
+    }
+
+    private void ToggleSpace(string key, bool selectedValue)
+    {
+        if (selectedValue)
+        {
+            selectedSpaces.Add(key);
+        }
+        else
+        {
+            selectedSpaces.Remove(key);
+        }
+    }
+
+    private void OnInstanceTypeChanged(Microsoft.AspNetCore.Components.ChangeEventArgs eventArgs)
+    {
+        instanceType = eventArgs.Value?.ToString() ?? "cloud";
+        authType = IsCloud() ? "oauth2" : "apiToken";
+
+        // Смена инсталляции меняет доступные эндпоинты: проверку и пространства сбрасываем.
+        testStatus = null;
+        spaces = [];
+        selectedSpaces.Clear();
+    }
+
+    private KnowledgeProviderTestDto BuildTestRequest()
+        => new(
+            title,
+            string.IsNullOrWhiteSpace(location) ? baseUrl?.Trim() : location.Trim(),
+            content,
+            string.IsNullOrWhiteSpace(credentialsRef) ? null : credentialsRef.Trim(),
+            BuildParameters(),
+            string.IsNullOrWhiteSpace(credentialsRef) ? BuildCredentials() : null);
+
+    private Dictionary<string, string?> BuildParameters()
+    {
+        var parameters = config
+            .Where(pair => !string.IsNullOrWhiteSpace(pair.Value))
+            .ToDictionary(
+                pair => pair.Key,
+                pair => (string?)pair.Value.Trim(),
+                StringComparer.OrdinalIgnoreCase);
+
+        if (selected is not null && HasParameter(selected, InstanceTypeParameter))
+        {
+            parameters[InstanceTypeParameter] = instanceType;
+            parameters[AuthTypeParameter] = authType;
+
+            if (!string.IsNullOrWhiteSpace(baseUrl))
+            {
+                parameters[BaseUrlParameter] = baseUrl.Trim();
+            }
+
+            if (HasParameter(selected, SpacesParameter) && selectedSpaces.Count > 0)
+            {
+                parameters[SpacesParameter] = string.Join(",", selectedSpaces.OrderBy(key => key, StringComparer.OrdinalIgnoreCase));
+            }
+        }
+
+        return parameters;
+    }
+
+    private Dictionary<string, string>? BuildCredentials()
+    {
+        if (selected is null || !HasParameter(selected, InstanceTypeParameter))
+        {
+            return null;
+        }
+
+        var credentials = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
+
+        AddCredential(credentials, "accessToken", accessToken);
+        AddCredential(credentials, "cloudId", cloudId);
+        AddCredential(credentials, "username", username);
+        AddCredential(credentials, "apiToken", apiToken);
+        AddCredential(credentials, "personalAccessToken", personalAccessToken);
+
+        return credentials.Count == 0 ? null : credentials;
+    }
+
+    private static void AddCredential(
+        IDictionary<string, string> credentials,
+        string name,
+        string? value)
+    {
+        if (!string.IsNullOrWhiteSpace(value))
+        {
+            credentials[name] = value.Trim();
+        }
+    }
+
+    private bool IsCloud()
+        => string.Equals(instanceType, "cloud", StringComparison.OrdinalIgnoreCase);
+
     private static bool HasParameter(KnowledgeProviderDto provider, string name)
         => provider.Parameters.Any(parameter =>
             string.Equals(parameter.Name, name, StringComparison.OrdinalIgnoreCase));
@@ -396,9 +679,15 @@
             : "docs/policy.md";
 
     private static IEnumerable<KnowledgeProviderParameterDto> ExtraParameters(KnowledgeProviderDto provider)
-        => provider.Parameters.Where(parameter =>
-            !string.Equals(parameter.Name, LocationParameter, StringComparison.OrdinalIgnoreCase)
-            && !string.Equals(parameter.Name, ContentParameter, StringComparison.OrdinalIgnoreCase));
+        => provider.Parameters.Where(parameter => !IsControlParameter(parameter.Name));
+
+    private static bool IsControlParameter(string name)
+        => string.Equals(name, LocationParameter, StringComparison.OrdinalIgnoreCase)
+            || string.Equals(name, ContentParameter, StringComparison.OrdinalIgnoreCase)
+            || string.Equals(name, InstanceTypeParameter, StringComparison.OrdinalIgnoreCase)
+            || string.Equals(name, BaseUrlParameter, StringComparison.OrdinalIgnoreCase)
+            || string.Equals(name, AuthTypeParameter, StringComparison.OrdinalIgnoreCase)
+            || string.Equals(name, SpacesParameter, StringComparison.OrdinalIgnoreCase);
 
     private static string BadgeClass(string status)
         => status switch

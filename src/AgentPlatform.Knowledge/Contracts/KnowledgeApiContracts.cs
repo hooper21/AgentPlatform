@@ -12,6 +12,10 @@ namespace AgentPlatform.Knowledge.Contracts;
 /// <param name="SyncSchedule">Cron-расписание синхронизации (UTC, 5 полей).</param>
 /// <param name="CredentialsRef">Ссылка на секрет для доступа к источнику.</param>
 /// <param name="Config">Дополнительные параметры провайдера (см. GetSourceInfo).</param>
+/// <param name="Credentials">
+/// Учётные данные, введённые в мастере: Knowledge Service шифрует их через
+/// Secret Service и сохраняет только credentials_ref. В config/БД значения не попадают.
+/// </param>
 public sealed record CreateKnowledgeSourceRequest(
     string? Type,
     string? Ref,
@@ -20,7 +24,8 @@ public sealed record CreateKnowledgeSourceRequest(
     string? ReindexCron = null,
     string? SyncSchedule = null,
     string? CredentialsRef = null,
-    IReadOnlyDictionary<string, string?>? Config = null);
+    IReadOnlyDictionary<string, string?>? Config = null,
+    IReadOnlyDictionary<string, string>? Credentials = null);
 
 /// <summary>Представление источника знаний в API.</summary>
 /// <param name="Id">Идентификатор источника.</param>
@@ -57,12 +62,19 @@ public sealed record KnowledgeSourceResponse(
 /// <param name="Content">Ручной контент (faq).</param>
 /// <param name="CredentialsRef">Ссылка на секрет.</param>
 /// <param name="Config">Дополнительные параметры провайдера.</param>
+/// <param name="Credentials">Временные учётные данные мастера (не сохраняются).</param>
 public sealed record TestKnowledgeProviderRequest(
     string? Title,
     string? Location,
     string? Content,
     string? CredentialsRef = null,
-    IReadOnlyDictionary<string, string?>? Config = null);
+    IReadOnlyDictionary<string, string?>? Config = null,
+    IReadOnlyDictionary<string, string>? Credentials = null);
+
+/// <summary>Описание шага подключения провайдера (предупреждение мастера).</summary>
+/// <param name="ProviderType">Токен провайдера.</param>
+/// <param name="Warning">Обязательное предупреждение для UI.</param>
+public sealed record KnowledgeProviderSetupResponse(string ProviderType, string Warning);
 
 /// <summary>Внутреннее содержимое knowledge_sources.index_meta.</summary>
 public sealed class KnowledgeIndexMeta
@@ -132,6 +144,7 @@ public sealed class KnowledgeIndexMeta
 /// <param name="Author">Автор/владелец страницы.</param>
 /// <param name="Space">Пространство/база знаний.</param>
 /// <param name="Folder">Папка/раздел.</param>
+/// <param name="Extra">Провайдер-специфичные метаданные (например, полный путь иерархии Confluence).</param>
 public sealed record KnowledgeChunkMetadata(
     string Source,
     string SourceType,
@@ -144,7 +157,8 @@ public sealed record KnowledgeChunkMetadata(
     DateTimeOffset? ModifiedAt = null,
     string? Author = null,
     string? Space = null,
-    string? Folder = null)
+    string? Folder = null,
+    IReadOnlyDictionary<string, string?>? Extra = null)
 {
     /// <summary>Сериализует метаданные для jsonb-столбца knowledge_chunks.metadata.</summary>
     public string ToJson() => PlatformJson.SerializeDb(this);

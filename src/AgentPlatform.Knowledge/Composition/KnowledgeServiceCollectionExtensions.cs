@@ -1,8 +1,10 @@
 using AgentPlatform.Core.Abstractions;
+using AgentPlatform.Infrastructure.Security;
 using AgentPlatform.Knowledge.Configuration;
 using AgentPlatform.Knowledge.Embeddings;
 using AgentPlatform.Knowledge.Ingest;
 using AgentPlatform.Knowledge.Ingest.Providers;
+using AgentPlatform.Knowledge.Ingest.Providers.Confluence;
 using AgentPlatform.Knowledge.Misses;
 using AgentPlatform.Knowledge.Reindex;
 using AgentPlatform.Knowledge.Search;
@@ -30,18 +32,33 @@ public static class KnowledgeServiceCollectionExtensions
         services.AddSingleton(options);
         services.AddSingleton<TimeProvider>(TimeProvider.System);
 
+        // Confluence: пагинация/таймауты/повторы (rate limit Atlassian).
+        var confluence = new ConfluenceOptions();
+        configuration.GetSection(ConfluenceOptions.SectionName).Bind(confluence);
+        confluence.Validate();
+        services.AddSingleton(confluence);
+
+        // Секреты учётных данных источника: AES-256 через Secret Service.
+        services.AddScoped<ISecretService, AesKmsSecretService>();
+        services.AddScoped<IKnowledgeSecretResolver, TenantKnowledgeSecretResolver>();
+
         // Эмбеддинги: IChatClient из LLM Gateway, модель/endpoint — llm_config тенанта.
         // TODO(llm-gateway): реальная фабрика провайдера; заглушка стартует без ключей.
         services.AddSingleton<IChatClientFactory, StubChatClientFactory>();
         services.AddScoped<IKnowledgeEmbedder, TenantChatClientEmbedder>();
 
-        // Инжест-провайдеры: document | site | faq — реализации контракта Core.
+        // Инжест-провайдеры: document | site | faq | confluence — реализации контракта Core.
         // Новый тип источника добавляется регистрацией IKnowledgeProvider, без
         // изменения пайплайна и API.
         services.AddSingleton<IKnowledgeProvider, DocumentProvider>();
         services.AddSingleton<IKnowledgeProvider, SiteProvider>();
         services.AddSingleton<IKnowledgeProvider, FaqProvider>();
-        services.AddSingleton<KnowledgeProviderRegistry>();
+
+        // Confluence — scoped: ему нужен Secret Service и tenant-контекст запроса.
+        services.AddScoped<IKnowledgeProvider, ConfluenceProvider>();
+
+        // Реестр scoped: перечисляет и singleton-, и scoped-провайдеров в scope запроса.
+        services.AddScoped<KnowledgeProviderRegistry>();
 
         if (options.UseInMemoryVectorStore)
         {
@@ -67,6 +84,13 @@ public static class KnowledgeServiceCollectionExtensions
             // на каждый вызов задаётся CancellationTokenSource в провайдере.
             client.Timeout = options.SiteRequestTimeout + TimeSpan.FromSeconds(1);
             client.DefaultRequestHeaders.UserAgent.ParseAdd(options.SiteUserAgent);
+        });
+
+        services.AddHttpClient(ConfluenceProvider.HttpClientName, client =>
+        {
+            // Дедлайн на каждый запрос задаёт ConfluenceRestClient (RequestTimeout).
+            client.Timeout = Timeout.InfiniteTimeSpan;
+            client.DefaultRequestHeaders.UserAgent.ParseAdd(confluence.UserAgent);
         });
 
         if (options.EnableScheduledReindex)

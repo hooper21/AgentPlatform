@@ -17,7 +17,7 @@ public sealed record KnowledgeChunkEmbedding(
 /// <param name="TenantId">Тенант-владелец.</param>
 /// <param name="SourceId">Источник знаний.</param>
 /// <param name="Title">Заголовок источника (для блока RAG).</param>
-/// <param name="SourceType">document | site | faq.</param>
+/// <param name="SourceType">document | site | faq | тип плагина.</param>
 public sealed record KnowledgeSourceRef(Guid TenantId, Guid SourceId, string Title, string SourceType);
 
 /// <summary>

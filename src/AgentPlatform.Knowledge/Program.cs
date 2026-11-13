@@ -10,7 +10,7 @@ var builder = WebApplication.CreateBuilder(args);
 // PostgreSQL + pgvector: knowledge_sources/knowledge_chunks/rag_misses, tenant-контекст.
 builder.Services.AddPlatformInfrastructure(PlatformInfrastructureOptions.FromEnvironment());
 
-// Инжест (document | site | faq), эмбеддер через IChatClient, RAG-поиск, переиндексация.
+// Инжест (document | site | faq | confluence), эмбеддер через IChatClient, RAG-поиск, переиндексация.
 builder.Services.AddKnowledgeService(builder.Configuration);
 
 var app = builder.Build();
@@ -42,7 +42,9 @@ app.MapGet("/", () => Results.Ok(new
         "POST /api/knowledge/sources/{sourceId}/reindex",
         "POST /api/knowledge/sources/{sourceId}/sync",
         "GET /api/knowledge/providers",
+        "GET /api/knowledge/providers/{providerType}/setup",
         "POST /api/knowledge/providers/{providerType}/test-connection",
+        "POST /api/knowledge/providers/{providerType}/spaces",
         "POST /api/knowledge/webhooks/{sourceId}",
         "GET /api/knowledge/search?query=&topK=5&threshold=0.77"
     }

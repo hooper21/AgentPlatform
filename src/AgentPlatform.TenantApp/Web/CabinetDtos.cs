@@ -171,4 +171,31 @@ public sealed record KnowledgeSourceCreateDto(
     string? Content,
     string? SyncSchedule,
     string? CredentialsRef,
-    IReadOnlyDictionary<string, string?>? Config);
+    IReadOnlyDictionary<string, string?>? Config,
+    IReadOnlyDictionary<string, string>? Credentials = null);
+
+/// <summary>Статус TestConnection провайдера знаний.</summary>
+public sealed record KnowledgeConnectionStatusDto(
+    bool IsHealthy,
+    string Message,
+    DateTimeOffset CheckedAt,
+    string? Error);
+
+/// <summary>Пространство внешней системы знаний (чекбокс мастера).</summary>
+public sealed record KnowledgeSpaceDto(
+    string Key,
+    string Name,
+    string? Type,
+    string? Url);
+
+/// <summary>Предупреждение шага подключения провайдера.</summary>
+public sealed record KnowledgeProviderSetupDto(string ProviderType, string Warning);
+
+/// <summary>Запрос TestConnection/списка пространств (секрет ещё не сохранён).</summary>
+public sealed record KnowledgeProviderTestDto(
+    string? Title,
+    string? Location,
+    string? Content,
+    string? CredentialsRef,
+    IReadOnlyDictionary<string, string?>? Config,
+    IReadOnlyDictionary<string, string>? Credentials = null);

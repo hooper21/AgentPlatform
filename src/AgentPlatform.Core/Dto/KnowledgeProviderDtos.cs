@@ -97,7 +97,28 @@ public sealed record KnowledgeProviderConfig(
 {
     /// <summary>Значение дополнительного параметра или null.</summary>
     public string? GetParameter(string name)
-        => Parameters is not null && Parameters.TryGetValue(name, out var value) ? value : null;
+    {
+        if (Parameters is null)
+        {
+            return null;
+        }
+
+        if (Parameters.TryGetValue(name, out var value))
+        {
+            return value;
+        }
+
+        // jsonb round-trip не сохраняет comparer: ключи могут прийти в другом регистре.
+        foreach (var pair in Parameters)
+        {
+            if (string.Equals(pair.Key, name, StringComparison.OrdinalIgnoreCase))
+            {
+                return pair.Value;
+            }
+        }
+
+        return null;
+    }
 }
 
 /// <summary>Статус связи с источником (результат TestConnection).</summary>

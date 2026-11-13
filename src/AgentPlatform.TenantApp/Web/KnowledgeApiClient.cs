@@ -24,6 +24,44 @@ public sealed class KnowledgeApiClient(HttpClient http)
             body: null,
             cancellationToken);
 
+    /// <summary>Предупреждение шага подключения (например, Confluence: права не переносятся).</summary>
+    public Task<KnowledgeProviderSetupDto> GetProviderSetupAsync(
+        Guid tenantId,
+        string providerType,
+        CancellationToken cancellationToken = default)
+        => SendAsync<KnowledgeProviderSetupDto>(
+            HttpMethod.Get,
+            $"api/knowledge/providers/{Uri.EscapeDataString(providerType)}/setup",
+            tenantId,
+            body: null,
+            cancellationToken);
+
+    /// <summary>Проверка подключения до сохранения источника (учётные данные — в теле).</summary>
+    public Task<KnowledgeConnectionStatusDto> TestConnectionAsync(
+        Guid tenantId,
+        string providerType,
+        KnowledgeProviderTestDto request,
+        CancellationToken cancellationToken = default)
+        => SendAsync<KnowledgeConnectionStatusDto>(
+            HttpMethod.Post,
+            $"api/knowledge/providers/{Uri.EscapeDataString(providerType)}/test-connection",
+            tenantId,
+            request,
+            cancellationToken);
+
+    /// <summary>Пространства внешней системы для чекбоксов мастера.</summary>
+    public Task<List<KnowledgeSpaceDto>> GetSpacesAsync(
+        Guid tenantId,
+        string providerType,
+        KnowledgeProviderTestDto request,
+        CancellationToken cancellationToken = default)
+        => SendAsync<List<KnowledgeSpaceDto>>(
+            HttpMethod.Post,
+            $"api/knowledge/providers/{Uri.EscapeDataString(providerType)}/spaces",
+            tenantId,
+            request,
+            cancellationToken);
+
     /// <summary>Источники знаний тенанта.</summary>
     public Task<List<KnowledgeSourceDto>> GetSourcesAsync(
         Guid tenantId,

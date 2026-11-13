@@ -137,6 +137,7 @@ th { font-size: 12px; text-transform: uppercase; letter-spacing: 0.04em; color: 
 .alert { padding: 10px 14px; border-radius: 8px; margin-bottom: 14px; font-size: 14px; }
 .alert-error { background: #fbe9e7; color: var(--danger); border: 1px solid #f2c6c0; }
 .alert-ok { background: #e1f5e9; color: var(--ok); border: 1px solid #bfe6cd; }
+.alert-warn { background: #fdf1dc; color: var(--warn); border: 1px solid #f0d7a8; }
 
 .login-wrap { display: flex; justify-content: center; padding: 48px 0; }
 .login-card { width: min(420px, 100%); }

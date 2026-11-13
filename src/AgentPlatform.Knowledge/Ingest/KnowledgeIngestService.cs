@@ -169,12 +169,66 @@ public sealed class KnowledgeIngestService(
         return source;
     }
 
+    /// <summary>
+    /// Удаляет из индекса страницы, удалённые в источнике (tombstone вебхука).
+    /// Источник не удаляется: обновляются index_meta и счётчик чанков.
+    /// </summary>
+    public async Task<KnowledgeSource?> ApplyDeletionsAsync(
+        Guid sourceId,
+        IReadOnlyCollection<string> externalIds,
+        CancellationToken cancellationToken = default)
+    {
+        ArgumentNullException.ThrowIfNull(externalIds);
+
+        var source = await _sources.FindAsync(sourceId, cancellationToken).ConfigureAwait(false);
+        if (source is null)
+        {
+            return null;
+        }
+
+        var tenantId = _tenantContext.RequireTenantId();
+        var now = _timeProvider.GetUtcNow();
+        var meta = KnowledgeIndexMeta.Parse(source.IndexMeta);
+        var removed = 0;
+
+        foreach (var externalId in externalIds
+            .Where(id => !string.IsNullOrWhiteSpace(id))
+            .Distinct(StringComparer.Ordinal))
+        {
+            await _vectorStore
+                .DeletePageChunksAsync(tenantId, source.Id, externalId, cancellationToken)
+                .ConfigureAwait(false);
+            removed++;
+        }
+
+        source.ChunkCount = await CountExistingChunksAsync(tenantId, source.Id, cancellationToken)
+            .ConfigureAwait(false);
+        source.IndexStatus = KnowledgeIndexStatus.Ready.ToDbValue();
+
+        meta.Chunks = source.ChunkCount;
+        meta.LastIndexedAt = now;
+        meta.AttemptedAt = now;
+        meta.Error = null;
+        meta.ErrorType = null;
+        source.IndexMeta = meta.ToJson();
+
+        _sources.Update(source);
+        await _sources.SaveChangesAsync(cancellationToken).ConfigureAwait(false);
+
+        _logger.LogInformation(
+            "Knowledge source {SourceId}: {Pages} page(s) removed by webhook, {Chunks} chunks left",
+            source.Id,
+            removed,
+            source.ChunkCount);
+
+        return source;
+    }
+
     private enum IndexMode
     {
         Full = 0,
         Incremental = 1
     }
-
     /// <summary>
     /// Прогон синхронизации: провайдер → чанки → эмбеддинги → хранилище.
     /// Любая ошибка (кроме отмены) фиксируется в index_meta; исключение не пробрасывается.
@@ -440,7 +494,8 @@ public sealed class KnowledgeIngestService(
                 pageMetadata.ModifiedAt,
                 pageMetadata.Author,
                 pageMetadata.Space,
-                pageMetadata.Folder);
+                pageMetadata.Folder,
+                pageMetadata.Extra);
 
             chunks.Add(new KnowledgeChunkEmbedding(
                 draft.Content,

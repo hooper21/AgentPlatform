@@ -7,12 +7,16 @@ using AgentPlatform.Infrastructure.DependencyInjection;
 using AgentPlatform.Infrastructure.Persistence;
 using AgentPlatform.Infrastructure.Persistence.Entities;
 using AgentPlatform.Infrastructure.Seeding;
+using AgentPlatform.Runtime;
 using Microsoft.EntityFrameworkCore;
 
 var builder = WebApplication.CreateBuilder(args);
 
 // Внутренний API платформы: работает с глобальными таблицами и cross-tenant выборками.
 builder.Services.AddPlatformInfrastructure(PlatformInfrastructureOptions.FromEnvironment());
+
+// RAG-порт Knowledge Service: диалоги кабинета получают справочный контекст.
+builder.Services.AddPlatformKnowledgeRag(builder.Configuration["Knowledge:BaseUrl"]);
 
 // Runtime, Secret Service и MCP-транспорт для диалогов/гейтов кабинета.
 builder.Services.AddControllerServices(builder.Configuration);

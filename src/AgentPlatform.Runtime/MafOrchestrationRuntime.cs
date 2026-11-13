@@ -37,6 +37,7 @@ public sealed class MafOrchestrationRuntime : IOrchestrationRuntime
     private readonly IApprovalStore _approvalStore;
     private readonly ITenantGateTimeoutProvider _gateTimeouts;
     private readonly AgentRuntimeOptions _options;
+    private readonly IKnowledgeContextProvider? _knowledgeContextProvider;
 
     /// <summary>Создаёт оркестратор.</summary>
     /// <param name="agentFactory">Сборка агента закреплённой версии (AgentFactory).</param>
@@ -46,6 +47,7 @@ public sealed class MafOrchestrationRuntime : IOrchestrationRuntime
     /// <param name="approvalStore">Заявки approvals (полный жизненный цикл HITL).</param>
     /// <param name="gateTimeouts">Таймаут ожидания решения по настройке тенанта.</param>
     /// <param name="options">Настройки Runtime (TTL кеша, таймауты, лимиты).</param>
+    /// <param name="knowledgeContextProvider">RAG-порт Knowledge Service (null — без знаний).</param>
     public MafOrchestrationRuntime(
         AgentFactory agentFactory,
         ICheckpointStore checkpointStore,
@@ -53,7 +55,8 @@ public sealed class MafOrchestrationRuntime : IOrchestrationRuntime
         PolicyEngine policyEngine,
         IApprovalStore approvalStore,
         ITenantGateTimeoutProvider gateTimeouts,
-        AgentRuntimeOptions options)
+        AgentRuntimeOptions options,
+        IKnowledgeContextProvider? knowledgeContextProvider = null)
     {
         _agentFactory = agentFactory ?? throw new ArgumentNullException(nameof(agentFactory));
         _checkpointStore = checkpointStore ?? throw new ArgumentNullException(nameof(checkpointStore));
@@ -62,6 +65,7 @@ public sealed class MafOrchestrationRuntime : IOrchestrationRuntime
         _approvalStore = approvalStore ?? throw new ArgumentNullException(nameof(approvalStore));
         _gateTimeouts = gateTimeouts ?? throw new ArgumentNullException(nameof(gateTimeouts));
         _options = options ?? throw new ArgumentNullException(nameof(options));
+        _knowledgeContextProvider = knowledgeContextProvider;
     }
 
     /// <inheritdoc />
@@ -112,7 +116,8 @@ public sealed class MafOrchestrationRuntime : IOrchestrationRuntime
             _approvalStore,
             _gateTimeouts,
             _options,
-            GraphSignatureHash);
+            GraphSignatureHash,
+            _knowledgeContextProvider);
 
         await ExecuteAsync(run, new OrchestrationMessage(OrchestrationSignal.LlmTurn), ct).ConfigureAwait(false);
 
@@ -261,7 +266,8 @@ public sealed class MafOrchestrationRuntime : IOrchestrationRuntime
             _approvalStore,
             _gateTimeouts,
             _options,
-            GraphSignatureHash);
+            GraphSignatureHash,
+            _knowledgeContextProvider);
 
         await ExecuteAsync(
                 run,

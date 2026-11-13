@@ -1,5 +1,6 @@
 using AgentPlatform.Core.Contracts;
 using AgentPlatform.Core.Enums;
+using AgentPlatform.Runtime.Knowledge;
 using Microsoft.Agents.AI.Workflows;
 using Microsoft.Extensions.AI;
 
@@ -149,7 +150,16 @@ internal sealed class DialogExecutor(OrchestrationState run)
 
         if (!string.IsNullOrWhiteSpace(run.Agent.Config.SystemPrompt))
         {
+            // Системный промпт агента передаётся БЕЗ ИЗМЕНЕНИЙ (контракт платформы).
             messages.Add(new ChatMessage(ChatRole.System, run.Agent.Config.SystemPrompt));
+        }
+
+        // RAG-контекст — отдельное system-сообщение с разделителями «не инструкции»
+        // и пометкой приоритета живых данных (результат тула главнее знаний).
+        var knowledgeMessage = KnowledgePromptFormatter.BuildSystemMessage(run.Knowledge);
+        if (knowledgeMessage is not null)
+        {
+            messages.Add(new ChatMessage(ChatRole.System, knowledgeMessage));
         }
 
         foreach (var message in run.State.Messages)

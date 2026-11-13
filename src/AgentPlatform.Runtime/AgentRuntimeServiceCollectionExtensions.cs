@@ -2,6 +2,7 @@ using AgentPlatform.Core.Abstractions;
 using AgentPlatform.Runtime.Orchestration;
 using AgentPlatform.Runtime.Policy;
 using Microsoft.Extensions.DependencyInjection;
+using Microsoft.Extensions.DependencyInjection.Extensions;
 
 namespace AgentPlatform.Runtime;
 
@@ -34,6 +35,10 @@ public static class AgentRuntimeServiceCollectionExtensions
 
         // Таймаут гейта: 24 ч по умолчанию и переопределение по тенанту (из options).
         services.AddSingleton<ITenantGateTimeoutProvider, AgentRuntimeGateTimeoutProvider>();
+
+        // RAG-порт: хост подменяет его HTTP-адаптером Knowledge Service
+        // (AddPlatformKnowledgeRag); без Knowledge Service — пустой контекст.
+        services.TryAddSingleton<IKnowledgeContextProvider, NullKnowledgeContextProvider>();
 
         // AgentFactory зависит от портов хоста (IAgentConfigStore — EF/DbContext, scoped),
         // поэтому его lifetime совпадает с lifetime оркестратора.

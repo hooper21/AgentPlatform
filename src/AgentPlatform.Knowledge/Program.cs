@@ -1,32 +1,53 @@
 using AgentPlatform.Core.Dto;
+using AgentPlatform.Infrastructure.Configuration;
+using AgentPlatform.Infrastructure.DependencyInjection;
+using AgentPlatform.Infrastructure.Tenancy;
+using AgentPlatform.Knowledge.Composition;
+using AgentPlatform.Knowledge.Endpoints;
 
 var builder = WebApplication.CreateBuilder(args);
 
-// TODO(2.3): pgvector-поиск и инжест (Knowledge Service) — здесь появится доступ к БД и embedder.
+// PostgreSQL + pgvector: knowledge_sources/knowledge_chunks/rag_misses, tenant-контекст.
+builder.Services.AddPlatformInfrastructure(PlatformInfrastructureOptions.FromEnvironment());
+
+// Инжест (document | site | faq), эмбеддер через IChatClient, RAG-поиск, переиндексация.
+builder.Services.AddKnowledgeService(builder.Configuration);
+
 var app = builder.Build();
+
+// v1: tenant определяется заголовком X-Tenant-Id (заглушка аутентификации, см. README).
+// Все операции Knowledge Service идут только в рамках установленного тенанта.
+app.Use(async (context, next) =>
+{
+    if (context.Request.Headers.TryGetValue(KnowledgeEndpoints.TenantHeader, out var values)
+        && Guid.TryParse(values.ToString(), out var tenantId)
+        && tenantId != Guid.Empty)
+    {
+        context.RequestServices.GetRequiredService<TenantContext>().SetTenant(tenantId);
+    }
+
+    await next(context);
+});
 
 app.MapGet("/", () => Results.Ok(new
 {
     service = "knowledge",
-    status = "stub",
-    endpoints = new[] { "/health", "/api/v1/knowledge/search", "/api/v1/knowledge/sources/{sourceId}/reindex" }
+    status = "ready",
+    endpoints = new[]
+    {
+        "/health",
+        "POST /api/knowledge/sources",
+        "GET /api/knowledge/sources",
+        "GET /api/knowledge/sources/{sourceId}",
+        "POST /api/knowledge/sources/{sourceId}/reindex",
+        "GET /api/knowledge/search?query=&topK=5&threshold=0.77"
+    }
 }));
 
 app.MapGet("/health", () => Results.Ok(new ServiceHealth("ok", "knowledge", DateTimeOffset.UtcNow)));
 
-// Заглушка поиска: контракт зафиксирован, pgvector-запрос появится в задаче 2.3.
-app.MapPost("/api/v1/knowledge/search", (KnowledgeSearchRequest request) =>
-{
-    ArgumentNullException.ThrowIfNull(request);
-
-    return Results.Ok(Array.Empty<KnowledgeHit>());
-});
-
-app.MapPost("/api/v1/knowledge/sources/{sourceId:guid}/reindex", (Guid sourceId) =>
-    Results.Problem(
-        title: "Knowledge ingest is a stub in v1",
-        detail: $"Source {sourceId} reindex is implemented in task 2.3.",
-        statusCode: StatusCodes.Status501NotImplemented));
+app.MapKnowledgeEndpoints();
 
 app.Run();
+
 

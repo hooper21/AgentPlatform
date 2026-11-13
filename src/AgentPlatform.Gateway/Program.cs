@@ -21,6 +21,9 @@ builder.Services.AddGatewayRuntimePorts();
 builder.Services.AddGatewaySessions(builder.Configuration);
 builder.Services.AddGatewayLlmResilience(builder.Configuration);
 
+// RAG-порт Knowledge Service: справочный блок подставляется перед LLM-ходом.
+builder.Services.AddPlatformKnowledgeRag(builder.Configuration["Knowledge:BaseUrl"]);
+
 // Runtime агентов за контрактом IOrchestrationRuntime.
 builder.Services.AddMafAgentRuntime(new AgentRuntimeOptions
 {

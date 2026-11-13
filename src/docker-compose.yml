@@ -79,6 +79,8 @@ services:
     environment:
       <<: *app-environment
       Redis__ConnectionString: redis:6379
+      # RAG: справочный контекст диалогов через Knowledge Service.
+      Knowledge__BaseUrl: http://knowledge:8080
     ports:
       - "8080:8080"
     depends_on:
@@ -96,6 +98,8 @@ services:
       <<: *service-environment
       # MCP-транспорт тулов: Controller → Connector Host (streamable HTTP).
       ConnectorHost__BaseUrl: http://connector-host:8080
+      # RAG: справочный контекст диалогов через Knowledge Service.
+      Knowledge__BaseUrl: http://knowledge:8080
       # KMS-заглушка: base64 32-байтный ключ AES-256 (TODO: реальный KMS).
       AGENTPLATFORM_SECRETS_MASTER_KEY: ${AGENTPLATFORM_SECRETS_MASTER_KEY:-YWdlbnRwbGF0Zm9ybS1kZXYtbWFzdGVyLWtleS0zMmI=}
     ports:
@@ -149,9 +153,14 @@ services:
         PROJECT: AgentPlatform.Knowledge
     image: agentplatform/knowledge:${AGENTPLATFORM_IMAGE_TAG:-dev}
     environment:
-      <<: *app-environment
+      <<: *service-environment
     ports:
       - "8084:8080"
+    depends_on:
+      postgres:
+        condition: service_healthy
+      migrate:
+        condition: service_completed_successfully
     healthcheck: *app-healthcheck
 
   scheduler:

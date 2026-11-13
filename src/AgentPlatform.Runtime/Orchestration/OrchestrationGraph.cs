@@ -28,7 +28,7 @@ internal static class OrchestrationGraph
     {
         ArgumentNullException.ThrowIfNull(run);
 
-        var start = new TurnStartExecutor();
+        var start = new TurnStartExecutor(run);
         var dialog = new DialogExecutor(run);
         var tool = new ToolExecutor(run);
         var gate = new GateExecutor(run);

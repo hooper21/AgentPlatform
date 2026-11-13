@@ -44,6 +44,14 @@ internal sealed class ScriptedChatClient : IChatClient
         return this;
     }
 
+    /// <summary>Сценарный ответ, зависящий от фактической истории сообщений.</summary>
+    public ScriptedChatClient Enqueue(Func<IReadOnlyList<ChatMessage>, ChatResponse> script)
+    {
+        ArgumentNullException.ThrowIfNull(script);
+        _scripts.Enqueue(script);
+        return this;
+    }
+
     public Task<ChatResponse> GetResponseAsync(
         IEnumerable<ChatMessage> messages,
         ChatOptions? options = null,

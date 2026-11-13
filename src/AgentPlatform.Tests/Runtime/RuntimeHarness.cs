@@ -28,13 +28,15 @@ internal sealed class RuntimeHarness : IDisposable
         AgentRuntimeConfig config,
         ScriptedChatClient chatClient,
         IToolInvoker? toolInvoker = null,
-        IAgentConfigStore? configStore = null)
+        IAgentConfigStore? configStore = null,
+        IKnowledgeContextProvider? knowledgeContextProvider = null)
     {
         Config = config;
         ChatClient = chatClient;
         ConfigStore = configStore ?? new FakeAgentConfigStore(config);
         ToolInvoker = new RecordingToolInvoker(toolInvoker ?? new EchoToolsInvoker());
         Options = new AgentRuntimeOptions();
+        KnowledgeContextProvider = knowledgeContextProvider;
     }
 
     public AgentRuntimeConfig Config { get; }
@@ -46,6 +48,9 @@ internal sealed class RuntimeHarness : IDisposable
     public RecordingToolInvoker ToolInvoker { get; }
 
     public AgentRuntimeOptions Options { get; }
+
+    /// <summary>RAG-порт Knowledge Service (null — знания не подключаются).</summary>
+    public IKnowledgeContextProvider? KnowledgeContextProvider { get; }
 
     /// <summary>Создаёт новый DbContext над той же InMemory-БД.</summary>
     public AgentPlatformDbContext CreateContext()
@@ -86,7 +91,8 @@ internal sealed class RuntimeHarness : IDisposable
             new PolicyEngine(),
             new EfApprovalStore(database),
             new AgentRuntimeGateTimeoutProvider(Options),
-            Options);
+            Options,
+            KnowledgeContextProvider);
     }
 
     /// <summary>Заявка approvals в отдельном DbContext (эмуляция чтения из БД).</summary>

@@ -23,6 +23,7 @@ internal sealed class OrchestrationState
     private readonly IApprovalStore _approvalStore;
     private readonly ITenantGateTimeoutProvider _gateTimeouts;
     private readonly AgentRuntimeOptions _options;
+    private readonly IKnowledgeContextProvider? _knowledgeContextProvider;
     private readonly string _graphSignatureHash;
     private readonly int _superstepBudget;
 
@@ -37,7 +38,8 @@ internal sealed class OrchestrationState
         IApprovalStore approvalStore,
         ITenantGateTimeoutProvider gateTimeouts,
         AgentRuntimeOptions options,
-        string graphSignatureHash)
+        string graphSignatureHash,
+        IKnowledgeContextProvider? knowledgeContextProvider)
     {
         Session = session;
         Agent = agent;
@@ -50,6 +52,7 @@ internal sealed class OrchestrationState
         _gateTimeouts = gateTimeouts;
         _options = options;
         _graphSignatureHash = graphSignatureHash;
+        _knowledgeContextProvider = knowledgeContextProvider;
         _superstepBudget = superstep + options.MaxSuperstepsPerTurn;
         TenantPolicy = new TenantPolicyContext(session.TenantId);
     }
@@ -78,6 +81,12 @@ internal sealed class OrchestrationState
     /// <summary>Ожидающий гейт (если ход остановлен на GateExecutor).</summary>
     public GatePayload? PendingGate { get; private set; }
 
+    /// <summary>
+    /// RAG-контекст текущего хода (загружается один раз до LLM-хода).
+    /// Это runtime-состояние, в нейтральный чекпоинт не сериализуется.
+    /// </summary>
+    public KnowledgeContext? Knowledge { get; private set; }
+
     /// <summary>Идентификатор заявки approvals.id для ожидающего гейта.</summary>
     public Guid? ApprovalId { get; private set; }
 
@@ -99,7 +108,8 @@ internal sealed class OrchestrationState
         IApprovalStore approvalStore,
         ITenantGateTimeoutProvider gateTimeouts,
         AgentRuntimeOptions options,
-        string graphSignatureHash)
+        string graphSignatureHash,
+        IKnowledgeContextProvider? knowledgeContextProvider = null)
         => new(
             session,
             agent,
@@ -111,7 +121,37 @@ internal sealed class OrchestrationState
             approvalStore,
             gateTimeouts,
             options,
-            graphSignatureHash);
+            graphSignatureHash,
+            knowledgeContextProvider);
+
+    /// <summary>
+    /// Подгружает RAG-контекст перед LLM-ходом. Недоступность Knowledge Service
+    /// не ломает диалог: контекст становится пустым (fail-open).
+    /// </summary>
+    public async Task LoadKnowledgeContextAsync(string? query, CancellationToken cancellationToken)
+    {
+        if (_knowledgeContextProvider is null || string.IsNullOrWhiteSpace(query))
+        {
+            Knowledge = null;
+            return;
+        }
+
+        try
+        {
+            Knowledge = await _knowledgeContextProvider
+                .GetContextAsync(Session.TenantId, query, cancellationToken)
+                .ConfigureAwait(false);
+        }
+        catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
+        {
+            throw;
+        }
+        catch (Exception)
+        {
+            // Поиск знаний — вспомогательный: диалог продолжается без справочного блока.
+            Knowledge = KnowledgeContext.Empty(query);
+        }
+    }
 
     /// <summary>Добавляет сообщение в историю диалога.</summary>
     public void AppendMessage(

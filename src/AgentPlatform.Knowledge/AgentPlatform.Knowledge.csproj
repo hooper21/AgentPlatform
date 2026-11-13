@@ -3,6 +3,11 @@
   <ItemGroup>
     <ProjectReference Include="..\AgentPlatform.Infrastructure\AgentPlatform.Infrastructure.csproj" />
     <ProjectReference Include="..\AgentPlatform.Core\AgentPlatform.Core.csproj" />
+    <ProjectReference Include="..\AgentPlatform.LlmGateway\AgentPlatform.LlmGateway.csproj" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <PackageReference Include="Microsoft.Extensions.AI" Version="10.11.0" />
   </ItemGroup>
 
   <PropertyGroup>
